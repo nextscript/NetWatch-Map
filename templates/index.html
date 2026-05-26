@@ -497,22 +497,57 @@ function hashString(value) {
   return hash >>> 0;
 }
 
-function getDisplayCoords(conn) {
-  const lat = Number(conn?.dst_lat ?? 0);
-  const lng = Number(conn?.dst_lon ?? 0);
-  if (!conn?.id) return { lat, lng };
-
-  const hash = hashString(conn.id);
-  const angle = (hash % 360) * (Math.PI / 180);
-  const step = 0.35 + ((hash >> 9) % 4) * 0.18;
-  const latOffset = Math.sin(angle) * step;
-  const lngScale = Math.max(0.35, Math.cos(lat * Math.PI / 180));
-  const lngOffset = (Math.cos(angle) * step) / lngScale;
-
+function getPointStyle(conn) {
   return {
-    lat: Math.max(-89.5, Math.min(89.5, lat + latOffset)),
-    lng: ((((lng + lngOffset) + 540) % 360) - 180),
+    radius: 0.3,
+    altitude: 0,
   };
+}
+
+function getDestinationKey(conn) {
+  return `${conn.remote_ip}:${conn.remote_port}`;
+}
+
+function buildConnectionPoint(conn) {
+  const pointStyle = getPointStyle(conn);
+  return {
+    lat: conn.dst_lat,
+    lng: conn.dst_lon,
+    color: conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a',
+    radius: pointStyle.radius,
+    altitude: pointStyle.altitude,
+    connectionId: conn.id,
+    destinationKey: getDestinationKey(conn),
+    _label: `<div style="font-family:monospace;font-size:12px;
+      background:rgba(2,12,28,.9);border:1px solid rgba(0,212,255,.3);
+      padding:8px 12px;border-radius:6px">
+      <b style="color:${conn.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
+      ${conn.remote_ip}
+      </b><br>
+      ${conn.dst_city}, ${conn.dst_country}<br>
+      <span style="color:#ffcc00">${conn.port_name}</span>
+    </div>`,
+  };
+}
+
+function rebuildConnectionPoints() {
+  const localPoints = pointsData.filter(point => point.isLocal);
+  const destinationMap = new Map();
+
+  Object.values(connections).forEach(conn => {
+    if (!conn || conn._pending) return;
+    const key = getDestinationKey(conn);
+    if (!destinationMap.has(key)) {
+      destinationMap.set(key, buildConnectionPoint(conn));
+    }
+  });
+
+  pointsData = [...localPoints, ...destinationMap.values()];
+  globe.pointsData(pointsData);
+
+  if (selectedConnectionId && !connections[selectedConnectionId]) {
+    clearSelection();
+  }
 }
 
 function syncRotationUI() {
@@ -603,7 +638,7 @@ function initGlobe() {
     // Points
     .pointsData([])
     .pointColor('color')
-    .pointAltitude(0.008)
+    .pointAltitude(d => d.altitude ?? 0)
     .pointRadius('radius')
     .pointLabel(d => d._label || '')
     .onPointClick(point => {
@@ -653,13 +688,12 @@ function initGlobe() {
 // ── Globe update helpers ─────────────────────────────────────────
 function addArc(conn) {
   const isOut = conn.direction === 'outgoing';
-  const display = getDisplayCoords(conn);
   arcsData.push({
     id: conn.id,
     startLat: conn.src_lat,
     startLng: conn.src_lon,
-    endLat:   display.lat,
-    endLng:   display.lng,
+    endLat:   conn.dst_lat,
+    endLng:   conn.dst_lon,
     color: isOut ? COLORS.out : COLORS.in,
     ...conn,
   });
@@ -668,7 +702,6 @@ function addArc(conn) {
 
 function updateArc(conn) {
   const isOut = conn.direction === 'outgoing';
-  const display = getDisplayCoords(conn);
   let changed = false;
   arcsData = arcsData.map(arc => {
     if (arc.id !== conn.id) return arc;
@@ -678,8 +711,8 @@ function updateArc(conn) {
       ...conn,
       startLat: conn.src_lat,
       startLng: conn.src_lon,
-      endLat: display.lat,
-      endLng: display.lng,
+      endLat: conn.dst_lat,
+      endLng: conn.dst_lon,
       color: isOut ? COLORS.out : COLORS.in,
     };
   });
@@ -692,17 +725,36 @@ function removeArc(id) {
 }
 
 function addPoint(lat, lng, color, radius, label, extra = {}) {
-  pointsData.push({ lat, lng, color, radius, _label: label, ...extra });
+  const point = { lat, lng, color, radius, _label: label, ...extra };
+  if (point.connectionId) {
+    pointsData = pointsData.filter(existing => existing.connectionId !== point.connectionId);
+  }
+  pointsData.push(point);
   globe.pointsData(pointsData);
 }
 
 function updatePoint(connectionId, lat, lng, color, radius, label, extra = {}) {
   let changed = false;
+  let found = false;
   pointsData = pointsData.map(point => {
     if (point.connectionId !== connectionId) return point;
+    found = true;
     changed = true;
     return { ...point, lat, lng, color, radius, _label: label, ...extra };
   });
+  if (!found) {
+    pointsData.push({ lat, lng, color, radius, _label: label, connectionId, ...extra });
+    changed = true;
+  }
+  if (connectionId) {
+    let seen = false;
+    pointsData = pointsData.filter(point => {
+      if (point.connectionId !== connectionId) return true;
+      if (seen) return false;
+      seen = true;
+      return true;
+    });
+  }
   if (changed) globe.pointsData(pointsData);
 }
 
@@ -885,7 +937,8 @@ socket.on('my_location', (data) => {
       padding:8px 12px;border-radius:6px">
       <b style="color:#00ff88">🖥️ THIS DEVICE</b><br>
       ${data.ip}<br>${data.city}, ${data.country}
-    </div>`
+    </div>`,
+    { isLocal: true, altitude: 0 }
   );
 
   // Pulsing ring at the local location
@@ -919,23 +972,9 @@ socket.on('new_connection', (conn) => {
   if (connections[conn.id]) return;
   connections[conn.id] = conn;
   totalSeen++;
-  const display = getDisplayCoords(conn);
 
   addArc(conn);
-  addPoint(display.lat, display.lng,
-    conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a',
-    0.3,
-    `<div style="font-family:monospace;font-size:12px;
-      background:rgba(2,12,28,.9);border:1px solid rgba(0,212,255,.3);
-      padding:8px 12px;border-radius:6px">
-      <b style="color:${conn.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
-        ${conn.remote_ip}
-      </b><br>
-      ${conn.dst_city}, ${conn.dst_country}<br>
-      <span style="color:#ffcc00">${conn.port_name}</span>
-    </div>`,
-    { connectionId: conn.id }
-  );
+  rebuildConnectionPoints();
   addRing(conn.dst_lat, conn.dst_lon,
     conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a');
 
@@ -946,26 +985,9 @@ socket.on('new_connection', (conn) => {
 socket.on('update_connection', (conn) => {
   if (!connections[conn.id]) return;
   connections[conn.id] = conn;
-  const display = getDisplayCoords(conn);
 
   updateArc(conn);
-  updatePoint(
-    conn.id,
-    display.lat,
-    display.lng,
-    conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a',
-    0.3,
-    `<div style="font-family:monospace;font-size:12px;
-      background:rgba(2,12,28,.9);border:1px solid rgba(0,212,255,.3);
-      padding:8px 12px;border-radius:6px">
-      <b style="color:${conn.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
-        ${conn.remote_ip}
-      </b><br>
-      ${conn.dst_city}, ${conn.dst_country}<br>
-      <span style="color:#ffcc00">${conn.port_name}</span>
-    </div>`,
-    { connectionId: conn.id }
-  );
+  rebuildConnectionPoints();
   updateListItem(conn);
 
   if (selectedConnectionId === conn.id) {
@@ -983,8 +1005,7 @@ socket.on('connection_closed', (data) => {
   }
   removeArc(data.id);
   removeFromList(data.id);
-  pointsData = pointsData.filter(p => p.connectionId !== data.id);
-  globe.pointsData(pointsData);
+  rebuildConnectionPoints();
   recalcStats();
 });
 
