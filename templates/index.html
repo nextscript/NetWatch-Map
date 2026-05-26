@@ -124,7 +124,14 @@
     font-size: 13px;
   }
 
-  .header-right { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+  .ip-display {
+    min-width: 280px;
+    display: grid;
+    justify-items: end;
+    align-items: center;
+  }
 
   .live-badge {
     display: flex; align-items: center; gap: 7px;
@@ -139,10 +146,21 @@
   @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
 
   #my-ip {
+    grid-area: 1 / 1;
     font-size: 11px; color: var(--cyan); opacity: .6;
     opacity: 0;
     visibility: hidden;
+    white-space: nowrap;
     transform: translateX(8px);
+    transition: opacity .2s ease, transform .2s ease, visibility .2s ease;
+  }
+  #privacy-label {
+    grid-area: 1 / 1;
+    font-size: 11px;
+    color: var(--cyan);
+    opacity: .45;
+    letter-spacing: 1px;
+    white-space: nowrap;
     transition: opacity .2s ease, transform .2s ease, visibility .2s ease;
   }
   .header-right:hover #my-ip,
@@ -150,6 +168,12 @@
     opacity: .6;
     visibility: visible;
     transform: translateX(0);
+  }
+  .header-right:hover #privacy-label,
+  .header-right:focus-within #privacy-label {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-8px);
   }
 
   /* ── Globe container ───────────────────────────────────────── */
@@ -398,7 +422,10 @@
   </div>
 
   <div class="header-right">
-    <span id="my-ip">–</span>
+    <div class="ip-display">
+      <span id="privacy-label">WAN PRIVACY</span>
+      <span id="my-ip">–</span>
+    </div>
     <div class="live-badge">
       <div class="live-dot"></div>
       LIVE
@@ -471,6 +498,7 @@ let totalSeen = 0;
 let globe;
 let selectedConnectionId = null;
 let rotationEnabled = true;
+let localDeviceIp = '';
 
 const COLORS = {
   out:   ['rgba(0,212,255,0.9)',  'rgba(0,100,220,0.2)'],
@@ -502,6 +530,37 @@ function getPointStyle(conn) {
     radius: 0.3,
     altitude: 0,
   };
+}
+
+function getLocalDevicePointLabel() {
+  return `<div style="font-family:monospace;font-size:12px;
+      background:rgba(2,12,28,.9);border:1px solid #00ff8844;
+      padding:8px 12px;border-radius:6px">
+      <b style="color:#00ff88">🖥️ THIS DEVICE</b><br>
+      ${escapeHtml(localDeviceIp || 'Unknown')}
+    </div>`;
+}
+
+function updateLocalDevicePoint() {
+  let changed = false;
+  pointsData = pointsData.map(point => {
+    if (!point.isLocal) return point;
+    changed = true;
+    return { ...point, _label: getLocalDevicePointLabel() };
+  });
+  if (changed) globe.pointsData(pointsData);
+}
+
+function pickLocalDeviceIp(adapters, selectedName = 'all') {
+  const realAdapters = (adapters || []).filter(a => a.name !== 'all');
+  const selected = realAdapters.find(a => a.name === selectedName && Array.isArray(a.ips) && a.ips.length);
+  if (selected) return selected.ips[0];
+
+  const active = realAdapters.find(a => a.is_up && Array.isArray(a.ips) && a.ips.length);
+  if (active) return active.ips[0];
+
+  const any = realAdapters.find(a => Array.isArray(a.ips) && a.ips.length);
+  return any ? any.ips[0] : '';
 }
 
 function getDestinationKey(conn) {
@@ -932,19 +991,9 @@ socket.on('my_location', (data) => {
 
   // Local location as a green point
   addPoint(myLat, myLon, COLORS.local, 0.55,
-    `<div style="font-family:monospace;font-size:12px;
-      background:rgba(2,12,28,.9);border:1px solid #00ff8844;
-      padding:8px 12px;border-radius:6px">
-      <b style="color:#00ff88">🖥️ THIS DEVICE</b><br>
-      ${data.ip}<br>${data.city}, ${data.country}
-    </div>`,
+    getLocalDevicePointLabel(),
     { isLocal: true, altitude: 0 }
   );
-
-  // Pulsing ring at the local location
-  setInterval(() => {
-    addRing(myLat, myLon, COLORS.local, 3, 2, 1000);
-  }, 3000);
 
   // Rotate globe toward the local location
   setTimeout(() => {
@@ -966,6 +1015,8 @@ socket.on('adapters', (adapters) => {
     if (a.name === cur) opt.selected = true;
     sel.appendChild(opt);
   });
+  localDeviceIp = pickLocalDeviceIp(adapters, cur || 'all');
+  updateLocalDevicePoint();
 });
 
 socket.on('new_connection', (conn) => {
