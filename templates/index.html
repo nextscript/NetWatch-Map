@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Network Map – Live Verbindungsmonitor</title>
+<title>Network Map – Live Connection Monitor</title>
 <style>
   /* ── Reset & Base ──────────────────────────────────────────── */
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -90,6 +90,39 @@
   }
   #adapter-select:focus { border-color: var(--cyan); box-shadow: var(--glow); }
   #adapter-select option { background: #020c1c; }
+
+  .rotation-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: rgba(0,212,255,0.07);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--cyan);
+    font-family: var(--font);
+    font-size: 12px;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: border .2s, box-shadow .2s, background .2s, color .2s;
+  }
+  .rotation-toggle:hover,
+  .rotation-toggle:focus-visible {
+    border-color: var(--cyan);
+    box-shadow: var(--glow);
+    outline: none;
+  }
+  .rotation-toggle.paused {
+    color: var(--gold);
+    background: rgba(255,204,0,0.08);
+    border-color: rgba(255,204,0,0.28);
+    box-shadow: 0 0 14px rgba(255,204,0,0.15);
+  }
+  .rotation-icon {
+    width: 18px;
+    text-align: center;
+    font-size: 13px;
+  }
 
   .header-right { margin-left: auto; display: flex; align-items: center; gap: 18px; }
 
@@ -334,7 +367,7 @@
 <!-- Loading overlay -->
 <div id="loading">
   <div class="spinner"></div>
-  <p>NETZWERK KARTE WIRD GELADEN...</p>
+  <p>LOADING NETWORK MAP...</p>
 </div>
 
 <!-- Header -->
@@ -345,8 +378,12 @@
   <div class="adapter-wrap">
     <label>ADAPTER</label>
     <select id="adapter-select" onchange="setAdapter(this.value)">
-      <option value="all">🌐  Alle Adapter</option>
+      <option value="all">🌐  All Adapters</option>
     </select>
+    <button id="rotation-toggle" class="rotation-toggle" type="button" onclick="toggleRotation()">
+      <span id="rotation-icon" class="rotation-icon">⏸</span>
+      <span id="rotation-label">Pause</span>
+    </button>
   </div>
 
   <div class="header-right">
@@ -363,7 +400,7 @@
   <div id="globeViz"></div>
   <div id="conn-detail">
     <div class="detail-empty">
-      Verbindung anklicken, um Details und die verwendete Anwendung zu sehen.
+      Click a connection to view details and the application in use.
     </div>
   </div>
 </div>
@@ -371,13 +408,13 @@
 <!-- Side panel -->
 <div id="side">
   <div class="panel-header">
-    ● VERBINDUNGEN
+    ● CONNECTIONS
     <span id="conn-count-badge">0</span>
   </div>
   <div id="conn-list">
     <div id="empty-state">
-      Warte auf Verbindungen...<br>
-      Verbindungen erscheinen automatisch.
+      Waiting for connections...<br>
+      Connections will appear automatically.
     </div>
   </div>
 </div>
@@ -386,27 +423,27 @@
 <div id="stats">
   <div class="stat">
     <div class="stat-val" id="s-total" style="color:var(--cyan)">0</div>
-    <div class="stat-lbl">Aktiv gesamt</div>
+    <div class="stat-lbl">Active Total</div>
   </div>
   <div class="stat-divider"></div>
   <div class="stat">
     <div class="stat-val" id="s-out" style="color:var(--cyan)">0</div>
-    <div class="stat-lbl">↑ Ausgehend</div>
+    <div class="stat-lbl">↑ Outgoing</div>
   </div>
   <div class="stat-divider"></div>
   <div class="stat">
     <div class="stat-val" id="s-in" style="color:var(--red)">0</div>
-    <div class="stat-lbl">↓ Eingehend</div>
+    <div class="stat-lbl">↓ Incoming</div>
   </div>
   <div class="stat-divider"></div>
   <div class="stat">
     <div class="stat-val" id="s-countries" style="color:var(--green)">0</div>
-    <div class="stat-lbl">Länder</div>
+    <div class="stat-lbl">Countries</div>
   </div>
   <div class="stat-divider"></div>
   <div class="stat">
     <div class="stat-val" id="s-total-seen" style="color:var(--gold)">0</div>
-    <div class="stat-lbl">Gesamt erkannt</div>
+    <div class="stat-lbl">Total Seen</div>
   </div>
 </div>
 
@@ -426,6 +463,7 @@ let myLat = 0, myLon = 0;
 let totalSeen = 0;
 let globe;
 let selectedConnectionId = null;
+let rotationEnabled = true;
 
 const COLORS = {
   out:   ['rgba(0,212,255,0.9)',  'rgba(0,100,220,0.2)'],
@@ -440,6 +478,33 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function syncRotationUI() {
+  const toggle = document.getElementById('rotation-toggle');
+  const icon = document.getElementById('rotation-icon');
+  const label = document.getElementById('rotation-label');
+  if (!toggle || !icon || !label) return;
+
+  toggle.classList.toggle('paused', !rotationEnabled);
+  toggle.setAttribute('aria-pressed', String(!rotationEnabled));
+  toggle.title = rotationEnabled
+    ? 'Pause rotation and move the map manually'
+    : 'Resume automatic rotation';
+  icon.textContent = rotationEnabled ? '⏸' : '▶';
+  label.textContent = rotationEnabled ? 'Pause' : 'Play';
+}
+
+function setRotationState(enabled) {
+  rotationEnabled = enabled;
+  if (globe?.controls()) {
+    globe.controls().autoRotate = enabled;
+  }
+  syncRotationUI();
+}
+
+function toggleRotation() {
+  setRotationState(!rotationEnabled);
 }
 
 // ── Stats helpers ────────────────────────────────────────────────
@@ -492,7 +557,7 @@ function initGlobe() {
       `<div style="font-family:monospace;font-size:12px;background:rgba(2,12,28,.92);
        border:1px solid rgba(0,212,255,.3);padding:8px 12px;border-radius:6px;line-height:1.8">
         <b style="color:${d.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
-          ${d.direction === 'outgoing' ? '↑ AUSGEHEND' : '↓ EINGEHEND'}
+          ${d.direction === 'outgoing' ? '↑ OUTGOING' : '↓ INCOMING'}
         </b><br>
         ${d.local_ip}:${d.local_port} → ${d.remote_ip}:${d.remote_port}<br>
         <span style="color:#ffcc00">${d.port_name}</span><br>
@@ -517,10 +582,25 @@ function initGlobe() {
   globe.width(el.offsetWidth);
   globe.height(el.offsetHeight);
 
+  const renderer = globe.renderer();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+  const globeMaterial = globe.globeMaterial();
+  if (globeMaterial.map) {
+    globeMaterial.map.anisotropy = maxAnisotropy;
+    globeMaterial.map.needsUpdate = true;
+  }
+  if (globeMaterial.bumpMap) {
+    globeMaterial.bumpMap.anisotropy = maxAnisotropy;
+    globeMaterial.bumpMap.needsUpdate = true;
+  }
+
   // Auto-rotate
-  globe.controls().autoRotate      = true;
+  globe.controls().autoRotate      = rotationEnabled;
   globe.controls().autoRotateSpeed = 0.25;
   globe.controls().enableZoom      = true;
+  syncRotationUI();
 
   // Resize
   window.addEventListener('resize', () => {
@@ -587,21 +667,21 @@ function addToList(conn) {
   item.innerHTML = `
     <div class="ci-top">
       <span class="ci-dir ${isOut ? 'out' : 'in'}">
-        ${isOut ? '↑ AUSGEHEND' : '↓ EINGEHEND'}
+        ${isOut ? '↑ OUTGOING' : '↓ INCOMING'}
       </span>
       <span class="ci-port">${conn.port_name}</span>
     </div>
     <div class="ci-ip">${conn.remote_ip}</div>
     <div class="ci-location">📍 ${conn.dst_city}, ${conn.dst_country} ${flag}</div>
     <div class="ci-isp">${conn.dst_isp || ''}</div>
-    <div class="ci-app">APP: ${escapeHtml(conn.process_name || 'Unbekannt')}</div>
+    <div class="ci-app">APP: ${escapeHtml(conn.process_name || 'Unknown')}</div>
   `;
 
   item.addEventListener('click', () => focusConnection(conn));
 
   list.insertBefore(item, list.firstChild);
 
-  // Begrenze Liste auf 150 Einträge
+  // Limit list to 150 entries
   while (list.children.length > 150) {
     list.removeChild(list.lastChild);
   }
@@ -626,30 +706,30 @@ function renderConnectionDetail(conn) {
   if (!conn) {
     detail.innerHTML = `
       <div class="detail-empty">
-        Verbindung anklicken, um Details und die verwendete Anwendung zu sehen.
+        Click a connection to view details and the application in use.
       </div>
     `;
     return;
   }
 
-  const directionLabel = conn.direction === 'outgoing' ? 'Ausgehend' : 'Eingehend';
-  const pidText = conn.pid ?? 'Unbekannt';
-  const processPath = conn.process_path || 'Nicht verfuegbar';
+  const directionLabel = conn.direction === 'outgoing' ? 'Outgoing' : 'Incoming';
+  const pidText = conn.pid ?? 'Unknown';
+  const processPath = conn.process_path || 'Not available';
 
   detail.innerHTML = `
-    <div class="detail-title">VERBINDUNGSDETAILS</div>
+    <div class="detail-title">CONNECTION DETAILS</div>
     <div class="detail-grid">
-      <div class="detail-label">Anwendung</div>
-      <div class="detail-value">${escapeHtml(conn.process_name || 'Unbekannt')}</div>
+      <div class="detail-label">Application</div>
+      <div class="detail-value">${escapeHtml(conn.process_name || 'Unknown')}</div>
       <div class="detail-label">PID</div>
       <div class="detail-value">${escapeHtml(pidText)}</div>
-      <div class="detail-label">Pfad</div>
+      <div class="detail-label">Path</div>
       <div class="detail-value">${escapeHtml(processPath)}</div>
-      <div class="detail-label">Richtung</div>
+      <div class="detail-label">Direction</div>
       <div class="detail-value">${escapeHtml(directionLabel)}</div>
       <div class="detail-label">Status</div>
       <div class="detail-value">${escapeHtml(conn.status || 'UNKNOWN')}</div>
-      <div class="detail-label">Lokal</div>
+      <div class="detail-label">Local</div>
       <div class="detail-value">${escapeHtml(`${conn.local_ip}:${conn.local_port}`)}</div>
       <div class="detail-label">Remote</div>
       <div class="detail-value">${escapeHtml(`${conn.remote_ip}:${conn.remote_port}`)}</div>
@@ -676,14 +756,18 @@ function focusConnection(conn) {
     { lat: conn.dst_lat, lng: conn.dst_lon, altitude: 1.8 },
     800
   );
-  setTimeout(() => { globe.controls().autoRotate = true; }, 5000);
+  setTimeout(() => {
+    if (rotationEnabled && globe?.controls()) {
+      globe.controls().autoRotate = true;
+    }
+  }, 5000);
 }
 
 // ── Socket.IO ────────────────────────────────────────────────────
 const socket = io({ transports: ['websocket', 'polling'] });
 
 socket.on('connect', () => {
-  console.log('[WS] Verbunden');
+  console.log('[WS] Connected');
 });
 
 socket.on('my_location', (data) => {
@@ -694,27 +778,27 @@ socket.on('my_location', (data) => {
   document.getElementById('my-ip').textContent =
     `${data.ip || ''}  |  ${data.city}, ${data.country}`;
 
-  // Eigener Standort als grüner Punkt
+  // Local location as a green point
   addPoint(myLat, myLon, COLORS.local, 0.55,
     `<div style="font-family:monospace;font-size:12px;
       background:rgba(2,12,28,.9);border:1px solid #00ff8844;
       padding:8px 12px;border-radius:6px">
-      <b style="color:#00ff88">🖥️ DIESES GERÄT</b><br>
+      <b style="color:#00ff88">🖥️ THIS DEVICE</b><br>
       ${data.ip}<br>${data.city}, ${data.country}
     </div>`
   );
 
-  // Pulsierender Ring am eigenen Standort
+  // Pulsing ring at the local location
   setInterval(() => {
     addRing(myLat, myLon, COLORS.local, 3, 2, 1000);
   }, 3000);
 
-  // Globus zum eigenen Standort drehen
+  // Rotate globe toward the local location
   setTimeout(() => {
     globe.pointOfView({ lat: myLat, lng: myLon, altitude: 2.2 }, 2000);
   }, 1500);
 
-  // Loading ausblenden
+  // Hide loading screen
   document.getElementById('loading').classList.add('hidden');
 });
 
@@ -772,9 +856,9 @@ socket.on('connection_closed', (data) => {
 // ── Adapter wechseln ─────────────────────────────────────────────
 function setAdapter(adapter) {
   socket.emit('set_adapter', { adapter });
-  // Verbindungsliste und Arcs leeren
+  // Clear connection list and arcs
   arcsData   = [];
-  pointsData = pointsData.filter(p => p.color === COLORS.local); // Eigenen Punkt behalten
+  pointsData = pointsData.filter(p => p.color === COLORS.local); // Keep local point
   if (globe) {
     globe.arcsData([]);
     globe.pointsData(pointsData);

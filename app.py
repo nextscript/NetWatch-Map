@@ -1,6 +1,6 @@
 """
-Network Map - Live Verbindungsmonitor
-Visualisiert eingehende/ausgehende Netzwerkverbindungen auf einem 3D-Globus
+Network Map - Live connection monitor
+Visualizes incoming and outgoing network connections on a 3D globe
 """
 
 import threading
@@ -57,7 +57,7 @@ def is_private_ip(ip: str) -> bool:
 
 
 def get_geo(ip: str) -> Optional[dict]:
-    """Geolokalisation einer IP mit Caching und Rate-Limit (45 req/min)."""
+    """Geolocate an IP with caching and rate limiting (45 req/min)."""
     if is_private_ip(ip):
         return None
 
@@ -65,7 +65,7 @@ def get_geo(ip: str) -> Optional[dict]:
         if ip in geo_cache:
             return geo_cache[ip]
 
-    # Rate-Limit: max 45 Anfragen / Minute → min. 1,35 s Abstand
+    # Rate limit: max 45 requests / minute -> min. 1.35 s spacing
     with geo_rate_lock:
         global last_geo_request
         elapsed = time.time() - last_geo_request
@@ -94,12 +94,12 @@ def get_geo(ip: str) -> Optional[dict]:
                 geo_cache[ip] = result
             return result
     except Exception as e:
-        print(f'[GEO] Fehler für {ip}: {e}')
+        print(f'[GEO] Error for {ip}: {e}')
     return None
 
 
 def get_my_location() -> dict:
-    """Öffentliche IP und Standort dieser Maschine ermitteln."""
+    """Determine this machine's public IP and location."""
     try:
         r = requests.get(
             'http://ip-api.com/json/',
@@ -111,21 +111,21 @@ def get_my_location() -> dict:
             return {
                 'lat': data['lat'],
                 'lon': data['lon'],
-                'city': data.get('city', 'Unbekannt'),
-                'country': data.get('country', 'Unbekannt'),
+                'city': data.get('city', 'Unknown'),
+                'country': data.get('country', 'Unknown'),
                 'countryCode': data.get('countryCode', '').lower(),
                 'ip': data.get('query', ''),
             }
     except Exception as e:
-        print(f'[GEO] Eigener Standort fehlgeschlagen: {e}')
-    # Fallback: Deutschland
-    return {'lat': 51.16, 'lon': 10.45, 'city': 'Unbekannt', 'country': 'Deutschland',
+        print(f'[GEO] Failed to resolve local location: {e}')
+    # Fallback: Germany
+    return {'lat': 51.16, 'lon': 10.45, 'city': 'Unknown', 'country': 'Germany',
             'countryCode': 'de', 'ip': ''}
 
 
 def get_adapters() -> list:
-    """Alle Netzwerkadapter mit IPv4-Adressen auflisten."""
-    adapters = [{'name': 'all', 'display': '🌐  Alle Adapter', 'ips': [], 'is_up': True}]
+    """List all network adapters with IPv4 addresses."""
+    adapters = [{'name': 'all', 'display': '🌐  All Adapters', 'ips': [], 'is_up': True}]
     stats = psutil.net_if_stats()
     addrs = psutil.net_if_addrs()
 
@@ -144,10 +144,10 @@ def get_adapters() -> list:
 
 
 def determine_direction(conn) -> str:
-    """Eingehend oder ausgehend bestimmen."""
+    """Determine whether a connection is incoming or outgoing."""
     if conn.status in ('LISTEN',):
         return 'incoming'
-    # ESTABLISHED: wenn lokaler Port < 1024 oder remote Port < 1024 → oft Server-seitig
+    # ESTABLISHED: if local port < 1024 or remote port < 1024 -> often server-side
     if conn.raddr and conn.laddr:
         if conn.laddr.port < 1024 and conn.raddr.port >= 1024:
             return 'incoming'
@@ -155,11 +155,11 @@ def determine_direction(conn) -> str:
 
 
 def get_process_details(pid: Optional[int]) -> dict:
-    """Prozessdetails fuer eine Verbindung sicher auslesen."""
+    """Safely read process details for a connection."""
     if pid is None:
         return {
             'pid': None,
-            'process_name': 'Unbekannt',
+            'process_name': 'Unknown',
             'process_path': '',
         }
 
@@ -179,14 +179,14 @@ def get_process_details(pid: Optional[int]) -> dict:
 
 
 def monitor_connections():
-    """Hintergrund-Thread: überwacht aktive TCP/UDP Verbindungen."""
+    """Background thread that monitors active TCP/UDP connections."""
     global selected_adapter
 
     while True:
         try:
             conns = psutil.net_connections(kind='inet')
 
-            # Adapter-IPs für Filter
+            # Adapter IPs for filtering
             adapter_ips: set = set()
             if selected_adapter and selected_adapter != 'all':
                 for addr in psutil.net_if_addrs().get(selected_adapter, []):
@@ -213,7 +213,7 @@ def monitor_connections():
 
                 with active_conn_lock:
                     if key not in active_connections:
-                        # Als "pending" vormerken, damit kein doppelter Lookup
+                        # Mark as pending to avoid duplicate lookups
                         active_connections[key] = {'id': key, '_pending': True}
 
                         direction = determine_direction(conn)
@@ -257,7 +257,7 @@ def monitor_connections():
                                         local_port, remote_port, direction, status_str,
                                         proc_info)
 
-            # Geschlossene Verbindungen entfernen
+            # Remove closed connections
             with active_conn_lock:
                 closed = [k for k in list(active_connections.keys()) if k not in current_keys]
                 for k in closed:
@@ -266,7 +266,7 @@ def monitor_connections():
                         socketio.emit('connection_closed', {'id': k})
 
         except Exception as e:
-            print(f'[MONITOR] Fehler: {e}')
+            print(f'[MONITOR] Error: {e}')
 
         time.sleep(2)
 
@@ -300,7 +300,7 @@ def api_set_adapter():
 def on_connect():
     emit('my_location', my_location)
     emit('adapters', get_adapters())
-    # Aktive Verbindungen senden (für Neu-Verbindungen zum Browser)
+    # Send active connections for newly opened browser sessions
     with active_conn_lock:
         for entry in active_connections.values():
             if not entry.get('_pending'):
@@ -311,8 +311,8 @@ def on_connect():
 def on_set_adapter(data):
     global selected_adapter
     selected_adapter = data.get('adapter', 'all')
-    print(f'[ADAPTER] Ausgewählt: {selected_adapter}')
-    # Alle bestehenden Verbindungen zurücksetzen
+    print(f'[ADAPTER] Selected: {selected_adapter}')
+    # Reset all existing connections
     with active_conn_lock:
         for k in list(active_connections.keys()):
             entry = active_connections.pop(k)
@@ -324,7 +324,7 @@ def on_set_adapter(data):
 
 if __name__ == '__main__':
     import sys
-    # Windows: UTF-8 Ausgabe erzwingen
+    # Windows: force UTF-8 output
     if sys.platform == 'win32':
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -334,16 +334,16 @@ if __name__ == '__main__':
     print('       NETWORK MAP - Live Monitor         ')
     print('===========================================')
     print()
-    print('[*] Ermittle deinen Standort...')
+    print('[*] Resolving your location...')
     my_location = get_my_location()
-    print(f"[+] Standort: {my_location.get('city')}, {my_location.get('country')}  ({my_location.get('ip')})")
+    print(f"[+] Location: {my_location.get('city')}, {my_location.get('country')}  ({my_location.get('ip')})")
 
     t = threading.Thread(target=monitor_connections, daemon=True)
     t.start()
-    print('[+] Verbindungsmonitor gestartet')
+    print('[+] Connection monitor started')
     print()
-    print('[>] Oeffne http://localhost:5000 im Browser')
-    print('    (Strg+C zum Beenden)')
+    print('[>] Open http://localhost:5000 in your browser')
+    print('    (Ctrl+C to quit)')
     print()
 
     socketio.run(app, host='0.0.0.0', port=5000, debug=False,

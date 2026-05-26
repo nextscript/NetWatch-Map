@@ -3,7 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 
 cd /d "%~dp0"
-title Network Map - Live Verbindungsmonitor
+title Network Map - Live Connection Monitor
 color 0B
 
 echo.
@@ -40,43 +40,43 @@ for /f "tokens=1,2 delims=." %%a in ("%PYTHON_VERSION%") do (
 if %PY_MAJOR% LSS 3 goto :python_version_error
 if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 9 goto :python_version_error
 
-echo  [1/2] Installiere Abhaengigkeiten...
+echo  [1/2] Installing dependencies...
 %PYTHON_EXE% -m pip install -r requirements.txt
 if errorlevel 1 goto :pip_failed
 
 echo.
-echo  [2/2] Starte Server...
-echo  Oeffne http://localhost:5000 im Browser
+echo  [2/2] Starting server...
+echo  Open http://localhost:5000 in your browser
 echo.
 %PYTHON_EXE% app.py
 goto :end
 
 :python_missing
-echo  Kein nutzbares Python gefunden.
+echo  No usable Python installation found.
 echo.
-echo  Unter Windows 11 ist oft nur der Microsoft-Store-Alias aktiv.
-echo  Das fuehrt zu Fehlern wie "Zugriff verweigert" oder einer leeren Python-Suche.
+echo  On Windows 11, the Microsoft Store alias is often enabled instead of a real Python install.
+echo  That can cause errors such as "Access denied" or an empty Python lookup.
 echo.
-echo  So behebst du das:
-echo  1. Python 3.9 oder neuer von https://www.python.org/downloads/windows/ installieren
-echo  2. Beim Setup "Add python.exe to PATH" aktivieren
-echo  3. Optional: Windows-Einstellungen ^> Apps ^> Erweiterte App-Einstellungen ^> App-Ausfuehrungsaliase
-echo     Dort die Aliase fuer python.exe und python3.exe deaktivieren, wenn sie auf den Store zeigen
+echo  Fix it like this:
+echo  1. Install Python 3.9 or newer from https://www.python.org/downloads/windows/
+echo  2. Enable "Add python.exe to PATH" during setup
+echo  3. Optional: Windows Settings ^> Apps ^> Advanced app settings ^> App execution aliases
+echo     Disable the aliases for python.exe and python3.exe if they point to the Store
 echo.
 pause
 exit /b 1
 
 :python_version_error
-echo  Gefundenes Python %PYTHON_VERSION% ist zu alt.
-echo  Dieses Projekt braucht Python 3.9 oder neuer.
+echo  The detected Python version %PYTHON_VERSION% is too old.
+echo  This project requires Python 3.9 or newer.
 echo.
 pause
 exit /b 1
 
 :pip_failed
 echo.
-echo  Installation der Abhaengigkeiten ist fehlgeschlagen.
-echo  Pruefe Internetzugang, Rechte und deine Python-Installation.
+echo  Dependency installation failed.
+echo  Check your internet access, permissions, and Python installation.
 echo.
 pause
 exit /b 1
