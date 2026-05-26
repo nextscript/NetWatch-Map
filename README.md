@@ -1,11 +1,3 @@
-<body>
-  <h1>NETWATCH MAP</h1>
-  <p>
-    NETWATCH MAP is a local web application for live visualization of network
-    connections. The app monitors active TCP and UDP connections on the current
-    system and displays them in real time on an interactive 3D globe.
-  </p>
-
   <h2>What the app does</h2>
   <ul>
     <li>Continuously detects active internet connections on the computer.</li>
