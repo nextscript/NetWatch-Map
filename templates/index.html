@@ -627,6 +627,25 @@ function addArc(conn) {
   globe.arcsData(arcsData);
 }
 
+function updateArc(conn) {
+  const isOut = conn.direction === 'outgoing';
+  let changed = false;
+  arcsData = arcsData.map(arc => {
+    if (arc.id !== conn.id) return arc;
+    changed = true;
+    return {
+      ...arc,
+      ...conn,
+      startLat: conn.src_lat,
+      startLng: conn.src_lon,
+      endLat: conn.dst_lat,
+      endLng: conn.dst_lon,
+      color: isOut ? COLORS.out : COLORS.in,
+    };
+  });
+  if (changed) globe.arcsData(arcsData);
+}
+
 function removeArc(id) {
   arcsData = arcsData.filter(a => a.id !== id);
   globe.arcsData(arcsData);
@@ -635,6 +654,16 @@ function removeArc(id) {
 function addPoint(lat, lng, color, radius, label, extra = {}) {
   pointsData.push({ lat, lng, color, radius, _label: label, ...extra });
   globe.pointsData(pointsData);
+}
+
+function updatePoint(connectionId, lat, lng, color, radius, label, extra = {}) {
+  let changed = false;
+  pointsData = pointsData.map(point => {
+    if (point.connectionId !== connectionId) return point;
+    changed = true;
+    return { ...point, lat, lng, color, radius, _label: label, ...extra };
+  });
+  if (changed) globe.pointsData(pointsData);
 }
 
 function addRing(lat, lng, color, maxR = 2.5, speed = 2.5, period = 900) {
@@ -662,10 +691,27 @@ function addToList(conn) {
   item.className = 'conn-item';
   item.id = sid;
 
+  item.addEventListener('click', () => focusConnection(connections[conn.id] || conn));
+  renderListItem(item, conn);
+  list.insertBefore(item, list.firstChild);
+
+  // Limit list to 150 entries
+  while (list.children.length > 150) {
+    list.removeChild(list.lastChild);
+  }
+}
+
+function renderListItem(item, conn) {
+  const isOut = conn.direction === 'outgoing';
+
   const flag = conn.dst_country_code
     ? `<img src="https://flagcdn.com/16x12/${conn.dst_country_code}.png"
            class="flag-img" alt="${conn.dst_country_code}" loading="lazy">`
     : '';
+
+  const localPortInfo = conn.local_port_count > 1
+    ? `LOCAL PORTS: ${conn.local_ports.join(', ')}`
+    : `LOCAL PORT: ${conn.local_port}`;
 
   item.innerHTML = `
     <div class="ci-top">
@@ -677,17 +723,15 @@ function addToList(conn) {
     <div class="ci-ip">${conn.remote_ip}</div>
     <div class="ci-location">📍 ${conn.dst_city}, ${conn.dst_country} ${flag}</div>
     <div class="ci-isp">${conn.dst_isp || ''}</div>
+    <div class="ci-isp">${escapeHtml(localPortInfo)}</div>
     <div class="ci-app">APP: ${escapeHtml(conn.process_name || 'Unknown')}</div>
   `;
+}
 
-  item.addEventListener('click', () => focusConnection(conn));
-
-  list.insertBefore(item, list.firstChild);
-
-  // Limit list to 150 entries
-  while (list.children.length > 150) {
-    list.removeChild(list.lastChild);
-  }
+function updateListItem(conn) {
+  const item = document.getElementById(safeId(conn.id));
+  if (!item) return;
+  renderListItem(item, conn);
 }
 
 function setSelectedConnection(conn) {
@@ -722,6 +766,9 @@ function renderConnectionDetail(conn) {
   const directionLabel = conn.direction === 'outgoing' ? 'Outgoing' : 'Incoming';
   const pidText = conn.pid ?? 'Unknown';
   const processPath = conn.process_path || 'Not available';
+  const localPortsText = conn.local_port_count > 1
+    ? conn.local_ports.join(', ')
+    : String(conn.local_port);
 
   detail.innerHTML = `
     <div class="detail-title">CONNECTION DETAILS</div>
@@ -736,8 +783,10 @@ function renderConnectionDetail(conn) {
       <div class="detail-value">${escapeHtml(directionLabel)}</div>
       <div class="detail-label">Status</div>
       <div class="detail-value">${escapeHtml(conn.status || 'UNKNOWN')}</div>
-      <div class="detail-label">Local</div>
-      <div class="detail-value">${escapeHtml(`${conn.local_ip}:${conn.local_port}`)}</div>
+      <div class="detail-label">Local IP</div>
+      <div class="detail-value">${escapeHtml(conn.local_ip)}</div>
+      <div class="detail-label">Local Port${conn.local_port_count > 1 ? 's' : ''}</div>
+      <div class="detail-value">${escapeHtml(localPortsText)}</div>
       <div class="detail-label">Remote</div>
       <div class="detail-value">${escapeHtml(`${conn.remote_ip}:${conn.remote_port}`)}</div>
     </div>
@@ -850,6 +899,37 @@ socket.on('new_connection', (conn) => {
     conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a');
 
   addToList(conn);
+  recalcStats();
+});
+
+socket.on('update_connection', (conn) => {
+  if (!connections[conn.id]) return;
+  connections[conn.id] = conn;
+
+  updateArc(conn);
+  updatePoint(
+    conn.id,
+    conn.dst_lat,
+    conn.dst_lon,
+    conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a',
+    0.3,
+    `<div style="font-family:monospace;font-size:12px;
+      background:rgba(2,12,28,.9);border:1px solid rgba(0,212,255,.3);
+      padding:8px 12px;border-radius:6px">
+      <b style="color:${conn.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
+        ${conn.remote_ip}
+      </b><br>
+      ${conn.dst_city}, ${conn.dst_country}<br>
+      <span style="color:#ffcc00">${conn.port_name}</span>
+    </div>`,
+    { connectionId: conn.id }
+  );
+  updateListItem(conn);
+
+  if (selectedConnectionId === conn.id) {
+    renderConnectionDetail(conn);
+    setSelectedConnection(conn);
+  }
   recalcStats();
 });
 

@@ -178,6 +178,13 @@ def get_process_details(pid: Optional[int]) -> dict:
         }
 
 
+def aggregate_connection_key(conn, local_ip: str, remote_ip: str, remote_port: int,
+                             direction: str) -> str:
+    """Group equivalent connections into a single UI entry."""
+    pid = conn.pid if conn.pid is not None else 0
+    return f"{local_ip}|{remote_ip}|{remote_port}|{direction}|{pid}"
+
+
 def monitor_connections():
     """Background thread that monitors active TCP/UDP connections."""
     global selected_adapter
@@ -193,7 +200,7 @@ def monitor_connections():
                     if addr.family == socket.AF_INET:
                         adapter_ips.add(addr.address)
 
-            current_keys: set = set()
+            grouped: dict = {}
 
             for conn in conns:
                 if not conn.raddr or not conn.raddr.ip:
@@ -208,54 +215,100 @@ def monitor_connections():
                 if adapter_ips and local_ip not in adapter_ips:
                     continue
 
-                key = f"{local_ip}:{local_port}↔{remote_ip}:{remote_port}"
-                current_keys.add(key)
+                direction = determine_direction(conn)
+                key = aggregate_connection_key(conn, local_ip, remote_ip, remote_port, direction)
+                entry = grouped.get(key)
+                if entry is None:
+                    grouped[key] = {
+                        'conn': conn,
+                        'local_ip': local_ip,
+                        'remote_ip': remote_ip,
+                        'remote_port': remote_port,
+                        'direction': direction,
+                        'local_ports': {local_port},
+                        'status': conn.status or 'UNKNOWN',
+                    }
+                else:
+                    entry['local_ports'].add(local_port)
+                    if entry['status'] == 'UNKNOWN' and conn.status:
+                        entry['status'] = conn.status
+
+            current_keys = set(grouped.keys())
+
+            for key, grouped_entry in grouped.items():
+                conn = grouped_entry['conn']
+                local_ip = grouped_entry['local_ip']
+                remote_ip = grouped_entry['remote_ip']
+                remote_port = grouped_entry['remote_port']
+                direction = grouped_entry['direction']
+                local_ports = sorted(grouped_entry['local_ports'])
+                primary_local_port = local_ports[0] if local_ports else 0
+                status_str = grouped_entry['status']
+                proc_info = get_process_details(conn.pid)
 
                 with active_conn_lock:
-                    if key not in active_connections:
-                        # Mark as pending to avoid duplicate lookups
-                        active_connections[key] = {'id': key, '_pending': True}
+                    existing = active_connections.get(key)
+                    if existing and not existing.get('_pending'):
+                        updated = dict(existing)
+                        updated.update({
+                            'local_port': primary_local_port,
+                            'local_ports': local_ports,
+                            'local_port_count': len(local_ports),
+                            'status': status_str,
+                            'pid': proc_info['pid'],
+                            'process_name': proc_info['process_name'],
+                            'process_path': proc_info['process_path'],
+                            'port_name': port_name(remote_port),
+                        })
+                        if updated != existing:
+                            active_connections[key] = updated
+                            socketio.emit('update_connection', updated)
+                        continue
 
-                        direction = determine_direction(conn)
-                        status_str = conn.status or 'UNKNOWN'
-                        proc_info = get_process_details(conn.pid)
+                    if existing:
+                        continue
 
-                        def _process(k, rip, lip, lp, rp, direc, stat, proc):
-                            geo = get_geo(rip)
-                            if not geo:
-                                with active_conn_lock:
-                                    active_connections.pop(k, None)
-                                return
-                            data = {
-                                'id': k,
-                                'local_ip': lip,
-                                'remote_ip': rip,
-                                'local_port': lp,
-                                'remote_port': rp,
-                                'port_name': port_name(rp),
-                                'status': stat,
-                                'direction': direc,
-                                'pid': proc['pid'],
-                                'process_name': proc['process_name'],
-                                'process_path': proc['process_path'],
-                                'src_lat': my_location.get('lat', 0),
-                                'src_lon': my_location.get('lon', 0),
-                                'src_city': my_location.get('city', ''),
-                                'src_country': my_location.get('country', ''),
-                                'dst_lat': geo['lat'],
-                                'dst_lon': geo['lon'],
-                                'dst_city': geo['city'],
-                                'dst_country': geo['country'],
-                                'dst_country_code': geo['countryCode'],
-                                'dst_isp': geo['isp'],
-                            }
-                            with active_conn_lock:
-                                active_connections[k] = data
-                            socketio.emit('new_connection', data)
+                    # Mark as pending to avoid duplicate lookups
+                    active_connections[key] = {'id': key, '_pending': True}
 
-                        executor.submit(_process, key, remote_ip, local_ip,
-                                        local_port, remote_port, direction, status_str,
-                                        proc_info)
+                def _process(k, rip, lip, lp, lps, rp, direc, stat, proc):
+                    geo = get_geo(rip)
+                    if not geo:
+                        with active_conn_lock:
+                            active_connections.pop(k, None)
+                        return
+                    data = {
+                        'id': k,
+                        'local_ip': lip,
+                        'remote_ip': rip,
+                        'local_port': lp,
+                        'local_ports': lps,
+                        'local_port_count': len(lps),
+                        'remote_port': rp,
+                        'port_name': port_name(rp),
+                        'status': stat,
+                        'direction': direc,
+                        'pid': proc['pid'],
+                        'process_name': proc['process_name'],
+                        'process_path': proc['process_path'],
+                        'src_lat': my_location.get('lat', 0),
+                        'src_lon': my_location.get('lon', 0),
+                        'src_city': my_location.get('city', ''),
+                        'src_country': my_location.get('country', ''),
+                        'dst_lat': geo['lat'],
+                        'dst_lon': geo['lon'],
+                        'dst_city': geo['city'],
+                        'dst_country': geo['country'],
+                        'dst_country_code': geo['countryCode'],
+                        'dst_isp': geo['isp'],
+                    }
+                    with active_conn_lock:
+                        active_connections[k] = data
+                    socketio.emit('new_connection', data)
+
+                executor.submit(_process, key, remote_ip, local_ip,
+                                primary_local_port, local_ports, remote_port,
+                                direction, status_str, proc_info)
 
             # Remove closed connections
             with active_conn_lock:
