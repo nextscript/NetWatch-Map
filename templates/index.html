@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Map – Live Verbindungsmonitor</title>
+<style>
+  /* ── Reset & Base ──────────────────────────────────────────── */
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg:        #020810;
+    --panel:     rgba(2, 12, 28, 0.92);
+    --cyan:      #00d4ff;
+    --cyan-dim:  rgba(0,212,255,0.15);
+    --red:       #ff3a3a;
+    --green:     #00ff88;
+    --gold:      #ffcc00;
+    --text:      #c0e8ff;
+    --border:    rgba(0,212,255,0.18);
+    --glow:      0 0 18px rgba(0,212,255,0.35);
+    --font:      'Courier New', 'Consolas', monospace;
+  }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* ── Scanline overlay ──────────────────────────────────────── */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.06) 2px,
+      rgba(0,0,0,0.06) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── Header ────────────────────────────────────────────────── */
+  #header {
+    position: fixed; top: 0; left: 0; right: 0;
+    height: 56px;
+    background: rgba(2,8,20,0.95);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 20px; gap: 20px;
+    z-index: 200;
+    backdrop-filter: blur(8px);
+  }
+
+  .logo {
+    font-size: 18px; font-weight: bold; letter-spacing: 3px;
+    color: var(--cyan);
+    text-shadow: var(--glow);
+    white-space: nowrap;
+  }
+  .logo em { color: var(--red); font-style: normal; }
+
+  .sep {
+    width: 1px; height: 30px;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+
+  .adapter-wrap { display: flex; align-items: center; gap: 10px; }
+  .adapter-wrap label { font-size: 11px; color: var(--cyan); opacity: .7; letter-spacing: 1px; }
+
+  #adapter-select {
+    background: rgba(0,212,255,0.07);
+    border: 1px solid var(--border);
+    color: var(--cyan);
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-family: var(--font);
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+    transition: border .2s, box-shadow .2s;
+    max-width: 320px;
+  }
+  #adapter-select:focus { border-color: var(--cyan); box-shadow: var(--glow); }
+  #adapter-select option { background: #020c1c; }
+
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+
+  .live-badge {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11px; letter-spacing: 2px; color: var(--green);
+  }
+  .live-dot {
+    width: 8px; height: 8px;
+    background: var(--green); border-radius: 50%;
+    box-shadow: 0 0 8px var(--green);
+    animation: blink 1.2s infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  #my-ip {
+    font-size: 11px; color: var(--cyan); opacity: .6;
+  }
+
+  /* ── Globe container ───────────────────────────────────────── */
+  #globe-wrap {
+    position: fixed;
+    top: 56px; left: 0;
+    width: calc(100% - 370px);
+    height: calc(100% - 56px - 76px);
+    overflow: hidden;
+  }
+  #globeViz { width: 100%; height: 100%; }
+
+  #conn-detail {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: min(360px, calc(100% - 32px));
+    padding: 12px 14px 14px;
+    background: rgba(0, 12, 26, 0.82);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--glow);
+    backdrop-filter: blur(8px);
+    min-height: 148px;
+    z-index: 120;
+  }
+
+  /* ── Side panel ────────────────────────────────────────────── */
+  #side {
+    position: fixed;
+    top: 56px; right: 0;
+    width: 370px;
+    height: calc(100% - 56px - 76px);
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 12px 16px;
+    font-size: 11px; letter-spacing: 2px;
+    color: var(--cyan); opacity: .8;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+
+  #conn-count-badge {
+    background: var(--cyan-dim);
+    color: var(--cyan);
+    padding: 2px 8px; border-radius: 10px;
+    font-size: 11px;
+  }
+
+  #conn-list {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0,212,255,0.2) transparent;
+  }
+  #conn-list::-webkit-scrollbar { width: 4px; }
+  #conn-list::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.2); border-radius: 2px; }
+
+  .conn-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(0,212,255,0.07);
+    cursor: pointer;
+    transition: background .15s;
+    animation: slideIn .3s ease;
+  }
+  .conn-item:hover { background: rgba(0,212,255,0.05); }
+  .conn-item.highlight { background: rgba(0,212,255,0.12); }
+  .conn-item.selected {
+    background: rgba(0,212,255,0.1);
+    box-shadow: inset 0 0 0 1px rgba(0,212,255,0.18);
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(30px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .ci-top {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .ci-dir {
+    font-size: 10px; letter-spacing: 1.5px; font-weight: bold;
+    padding: 2px 6px; border-radius: 3px;
+  }
+  .ci-dir.out {
+    color: var(--cyan); background: rgba(0,212,255,0.12);
+    border: 1px solid rgba(0,212,255,0.25);
+  }
+  .ci-dir.in {
+    color: var(--red); background: rgba(255,58,58,0.12);
+    border: 1px solid rgba(255,58,58,0.25);
+  }
+  .ci-port {
+    font-size: 10px; color: var(--gold); opacity: .85;
+    background: rgba(255,204,0,0.1); padding: 2px 6px; border-radius: 3px;
+  }
+  .ci-ip {
+    font-size: 13px; font-weight: bold; color: #fff;
+    margin-bottom: 3px;
+  }
+  .ci-location { font-size: 11px; color: var(--text); opacity: .7; }
+  .ci-isp { font-size: 10px; color: var(--text); opacity: .45; margin-top: 2px; }
+  .ci-app {
+    font-size: 10px;
+    color: var(--green);
+    opacity: .8;
+    margin-top: 6px;
+  }
+
+  .detail-empty {
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--cyan);
+    opacity: .45;
+  }
+  .detail-title {
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--cyan);
+    margin-bottom: 10px;
+  }
+  .detail-grid {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 6px 10px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .detail-label {
+    color: var(--cyan);
+    opacity: .7;
+  }
+  .detail-value {
+    color: #fff;
+    word-break: break-word;
+  }
+
+  .flag-img { vertical-align: middle; margin-left: 4px; }
+
+  /* ── Stats bar ─────────────────────────────────────────────── */
+  #stats {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 76px;
+    background: rgba(2,8,20,0.95);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center;
+    justify-content: space-around;
+    padding: 0 30px;
+    z-index: 200;
+  }
+
+  .stat {
+    text-align: center; min-width: 90px;
+  }
+  .stat-val {
+    font-size: 26px; font-weight: bold; line-height: 1;
+    text-shadow: var(--glow);
+    transition: transform .15s;
+  }
+  .stat-val.bump { animation: bump .3s ease; }
+  @keyframes bump { 0%,100%{transform:scale(1)} 50%{transform:scale(1.25)} }
+  .stat-lbl {
+    font-size: 9px; letter-spacing: 2px; opacity: .55;
+    margin-top: 4px; text-transform: uppercase;
+  }
+
+  .stat-divider {
+    width: 1px; height: 40px;
+    background: var(--border);
+  }
+
+  /* ── Tooltip ───────────────────────────────────────────────── */
+  #tooltip {
+    position: fixed;
+    background: rgba(2,12,28,0.95);
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 12px; line-height: 1.7;
+    pointer-events: none;
+    z-index: 300;
+    display: none;
+    max-width: 260px;
+    box-shadow: var(--glow);
+  }
+
+  /* ── Spinner ───────────────────────────────────────────────── */
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 1000;
+    gap: 20px;
+  }
+  #loading.hidden { display: none; }
+  .spinner {
+    width: 50px; height: 50px;
+    border: 3px solid rgba(0,212,255,0.15);
+    border-top-color: var(--cyan);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading p { font-size: 13px; color: var(--cyan); letter-spacing: 2px; opacity: .7; }
+
+  /* ── Empty state ───────────────────────────────────────────── */
+  #empty-state {
+    padding: 40px 20px; text-align: center;
+    color: var(--cyan); opacity: .3; font-size: 12px; line-height: 2;
+  }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading">
+  <div class="spinner"></div>
+  <p>NETZWERK KARTE WIRD GELADEN...</p>
+</div>
+
+<!-- Header -->
+<div id="header">
+  <div class="logo">NET<em>WATCH</em> MAP</div>
+  <div class="sep"></div>
+
+  <div class="adapter-wrap">
+    <label>ADAPTER</label>
+    <select id="adapter-select" onchange="setAdapter(this.value)">
+      <option value="all">🌐  Alle Adapter</option>
+    </select>
+  </div>
+
+  <div class="header-right">
+    <span id="my-ip">–</span>
+    <div class="live-badge">
+      <div class="live-dot"></div>
+      LIVE
+    </div>
+  </div>
+</div>
+
+<!-- Globe -->
+<div id="globe-wrap">
+  <div id="globeViz"></div>
+  <div id="conn-detail">
+    <div class="detail-empty">
+      Verbindung anklicken, um Details und die verwendete Anwendung zu sehen.
+    </div>
+  </div>
+</div>
+
+<!-- Side panel -->
+<div id="side">
+  <div class="panel-header">
+    ● VERBINDUNGEN
+    <span id="conn-count-badge">0</span>
+  </div>
+  <div id="conn-list">
+    <div id="empty-state">
+      Warte auf Verbindungen...<br>
+      Verbindungen erscheinen automatisch.
+    </div>
+  </div>
+</div>
+
+<!-- Stats bar -->
+<div id="stats">
+  <div class="stat">
+    <div class="stat-val" id="s-total" style="color:var(--cyan)">0</div>
+    <div class="stat-lbl">Aktiv gesamt</div>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat">
+    <div class="stat-val" id="s-out" style="color:var(--cyan)">0</div>
+    <div class="stat-lbl">↑ Ausgehend</div>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat">
+    <div class="stat-val" id="s-in" style="color:var(--red)">0</div>
+    <div class="stat-lbl">↓ Eingehend</div>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat">
+    <div class="stat-val" id="s-countries" style="color:var(--green)">0</div>
+    <div class="stat-lbl">Länder</div>
+  </div>
+  <div class="stat-divider"></div>
+  <div class="stat">
+    <div class="stat-val" id="s-total-seen" style="color:var(--gold)">0</div>
+    <div class="stat-lbl">Gesamt erkannt</div>
+  </div>
+</div>
+
+<!-- Tooltip -->
+<div id="tooltip"></div>
+
+<!-- ── Scripts ────────────────────────────────────────── -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="https://unpkg.com/globe.gl@2.32.2/dist/globe.gl.min.js"></script>
+<script>
+// ── State ───────────────────────────────────────────────────────
+const connections  = {};   // id → data
+let arcsData       = [];
+let pointsData     = [];
+let ringsData      = [];
+let myLat = 0, myLon = 0;
+let totalSeen = 0;
+let globe;
+let selectedConnectionId = null;
+
+const COLORS = {
+  out:   ['rgba(0,212,255,0.9)',  'rgba(0,100,220,0.2)'],
+  in:    ['rgba(255,60,60,0.9)',  'rgba(255,140,0,0.2)'],
+  local: '#00ff88',
+};
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ── Stats helpers ────────────────────────────────────────────────
+function recalcStats() {
+  const active = Object.values(connections).filter(c => !c._pending);
+  const countries = new Set(active.map(c => c.dst_country).filter(Boolean));
+  const out = active.filter(c => c.direction === 'outgoing').length;
+  const ins = active.filter(c => c.direction === 'incoming').length;
+
+  setStatVal('s-total', active.length);
+  setStatVal('s-out',   out);
+  setStatVal('s-in',    ins);
+  setStatVal('s-countries', countries.size);
+  setStatVal('s-total-seen', totalSeen);
+
+  document.getElementById('conn-count-badge').textContent = active.length;
+}
+
+function setStatVal(id, val) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el.textContent !== String(val)) {
+    el.textContent = val;
+    el.classList.remove('bump');
+    void el.offsetWidth;
+    el.classList.add('bump');
+  }
+}
+
+// ── Globe setup ──────────────────────────────────────────────────
+function initGlobe() {
+  const el = document.getElementById('globeViz');
+
+  globe = Globe({ animateIn: true })
+    .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
+    .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
+    .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
+    .showAtmosphere(true)
+    .atmosphereColor('rgba(0,130,255,0.18)')
+    .atmosphereAltitude(0.18)
+    // Arcs
+    .arcsData([])
+    .arcColor('color')
+    .arcDashLength(0.45)
+    .arcDashGap(0.25)
+    .arcDashAnimateTime(1400)
+    .arcStroke(0.45)
+    .arcAltitudeAutoScale(0.4)
+    .arcLabel(d =>
+      `<div style="font-family:monospace;font-size:12px;background:rgba(2,12,28,.92);
+       border:1px solid rgba(0,212,255,.3);padding:8px 12px;border-radius:6px;line-height:1.8">
+        <b style="color:${d.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
+          ${d.direction === 'outgoing' ? '↑ AUSGEHEND' : '↓ EINGEHEND'}
+        </b><br>
+        ${d.local_ip}:${d.local_port} → ${d.remote_ip}:${d.remote_port}<br>
+        <span style="color:#ffcc00">${d.port_name}</span><br>
+        📍 ${d.dst_city}, ${d.dst_country}<br>
+        <span style="opacity:.6">${d.dst_isp}</span>
+      </div>`
+    )
+    // Points
+    .pointsData([])
+    .pointColor('color')
+    .pointAltitude(0.008)
+    .pointRadius('radius')
+    .pointLabel(d => d._label || '')
+    // Rings
+    .ringsData([])
+    .ringColor('color')
+    .ringMaxRadius('maxR')
+    .ringPropagationSpeed('speed')
+    .ringRepeatPeriod('period')
+    (el);
+
+  globe.width(el.offsetWidth);
+  globe.height(el.offsetHeight);
+
+  // Auto-rotate
+  globe.controls().autoRotate      = true;
+  globe.controls().autoRotateSpeed = 0.25;
+  globe.controls().enableZoom      = true;
+
+  // Resize
+  window.addEventListener('resize', () => {
+    globe.width(el.offsetWidth);
+    globe.height(el.offsetHeight);
+  });
+}
+
+// ── Globe update helpers ─────────────────────────────────────────
+function addArc(conn) {
+  const isOut = conn.direction === 'outgoing';
+  arcsData.push({
+    id: conn.id,
+    startLat: conn.src_lat,
+    startLng: conn.src_lon,
+    endLat:   conn.dst_lat,
+    endLng:   conn.dst_lon,
+    color: isOut ? COLORS.out : COLORS.in,
+    ...conn,
+  });
+  globe.arcsData(arcsData);
+}
+
+function removeArc(id) {
+  arcsData = arcsData.filter(a => a.id !== id);
+  globe.arcsData(arcsData);
+}
+
+function addPoint(lat, lng, color, radius, label) {
+  pointsData.push({ lat, lng, color, radius, _label: label });
+  globe.pointsData(pointsData);
+}
+
+function addRing(lat, lng, color, maxR = 2.5, speed = 2.5, period = 900) {
+  ringsData.push({ lat, lng, color, maxR, speed, period });
+  globe.ringsData(ringsData);
+  // Auto-remove after a few seconds
+  setTimeout(() => {
+    ringsData.shift();
+    globe.ringsData(ringsData);
+  }, period * 4);
+}
+
+// ── Connection list ──────────────────────────────────────────────
+const safeId = id => 'ci-' + id.replace(/[^a-zA-Z0-9]/g, '_');
+
+function addToList(conn) {
+  const list = document.getElementById('conn-list');
+  const empty = document.getElementById('empty-state');
+  if (empty) empty.remove();
+
+  const isOut = conn.direction === 'outgoing';
+  const sid = safeId(conn.id);
+
+  const item = document.createElement('div');
+  item.className = 'conn-item';
+  item.id = sid;
+
+  const flag = conn.dst_country_code
+    ? `<img src="https://flagcdn.com/16x12/${conn.dst_country_code}.png"
+           class="flag-img" alt="${conn.dst_country_code}" loading="lazy">`
+    : '';
+
+  item.innerHTML = `
+    <div class="ci-top">
+      <span class="ci-dir ${isOut ? 'out' : 'in'}">
+        ${isOut ? '↑ AUSGEHEND' : '↓ EINGEHEND'}
+      </span>
+      <span class="ci-port">${conn.port_name}</span>
+    </div>
+    <div class="ci-ip">${conn.remote_ip}</div>
+    <div class="ci-location">📍 ${conn.dst_city}, ${conn.dst_country} ${flag}</div>
+    <div class="ci-isp">${conn.dst_isp || ''}</div>
+    <div class="ci-app">APP: ${escapeHtml(conn.process_name || 'Unbekannt')}</div>
+  `;
+
+  item.addEventListener('click', () => focusConnection(conn));
+
+  list.insertBefore(item, list.firstChild);
+
+  // Begrenze Liste auf 150 Einträge
+  while (list.children.length > 150) {
+    list.removeChild(list.lastChild);
+  }
+}
+
+function setSelectedConnection(conn) {
+  selectedConnectionId = conn?.id || null;
+  document.querySelectorAll('.conn-item.selected').forEach(el => {
+    el.classList.remove('selected');
+  });
+
+  if (selectedConnectionId) {
+    const selectedEl = document.getElementById(safeId(selectedConnectionId));
+    if (selectedEl) selectedEl.classList.add('selected');
+  }
+}
+
+function renderConnectionDetail(conn) {
+  const detail = document.getElementById('conn-detail');
+  if (!detail) return;
+
+  if (!conn) {
+    detail.innerHTML = `
+      <div class="detail-empty">
+        Verbindung anklicken, um Details und die verwendete Anwendung zu sehen.
+      </div>
+    `;
+    return;
+  }
+
+  const directionLabel = conn.direction === 'outgoing' ? 'Ausgehend' : 'Eingehend';
+  const pidText = conn.pid ?? 'Unbekannt';
+  const processPath = conn.process_path || 'Nicht verfuegbar';
+
+  detail.innerHTML = `
+    <div class="detail-title">VERBINDUNGSDETAILS</div>
+    <div class="detail-grid">
+      <div class="detail-label">Anwendung</div>
+      <div class="detail-value">${escapeHtml(conn.process_name || 'Unbekannt')}</div>
+      <div class="detail-label">PID</div>
+      <div class="detail-value">${escapeHtml(pidText)}</div>
+      <div class="detail-label">Pfad</div>
+      <div class="detail-value">${escapeHtml(processPath)}</div>
+      <div class="detail-label">Richtung</div>
+      <div class="detail-value">${escapeHtml(directionLabel)}</div>
+      <div class="detail-label">Status</div>
+      <div class="detail-value">${escapeHtml(conn.status || 'UNKNOWN')}</div>
+      <div class="detail-label">Lokal</div>
+      <div class="detail-value">${escapeHtml(`${conn.local_ip}:${conn.local_port}`)}</div>
+      <div class="detail-label">Remote</div>
+      <div class="detail-value">${escapeHtml(`${conn.remote_ip}:${conn.remote_port}`)}</div>
+    </div>
+  `;
+}
+
+function removeFromList(id) {
+  const el = document.getElementById(safeId(id));
+  if (el) {
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(40px)';
+    el.style.transition = 'all .3s ease';
+    setTimeout(() => el.remove(), 300);
+  }
+}
+
+// ── Focus / zoom on connection ───────────────────────────────────
+function focusConnection(conn) {
+  setSelectedConnection(conn);
+  renderConnectionDetail(conn);
+  globe.controls().autoRotate = false;
+  globe.pointOfView(
+    { lat: conn.dst_lat, lng: conn.dst_lon, altitude: 1.8 },
+    800
+  );
+  setTimeout(() => { globe.controls().autoRotate = true; }, 5000);
+}
+
+// ── Socket.IO ────────────────────────────────────────────────────
+const socket = io({ transports: ['websocket', 'polling'] });
+
+socket.on('connect', () => {
+  console.log('[WS] Verbunden');
+});
+
+socket.on('my_location', (data) => {
+  if (!data || !data.lat) return;
+  myLat = data.lat;
+  myLon = data.lon;
+
+  document.getElementById('my-ip').textContent =
+    `${data.ip || ''}  |  ${data.city}, ${data.country}`;
+
+  // Eigener Standort als grüner Punkt
+  addPoint(myLat, myLon, COLORS.local, 0.55,
+    `<div style="font-family:monospace;font-size:12px;
+      background:rgba(2,12,28,.9);border:1px solid #00ff8844;
+      padding:8px 12px;border-radius:6px">
+      <b style="color:#00ff88">🖥️ DIESES GERÄT</b><br>
+      ${data.ip}<br>${data.city}, ${data.country}
+    </div>`
+  );
+
+  // Pulsierender Ring am eigenen Standort
+  setInterval(() => {
+    addRing(myLat, myLon, COLORS.local, 3, 2, 1000);
+  }, 3000);
+
+  // Globus zum eigenen Standort drehen
+  setTimeout(() => {
+    globe.pointOfView({ lat: myLat, lng: myLon, altitude: 2.2 }, 2000);
+  }, 1500);
+
+  // Loading ausblenden
+  document.getElementById('loading').classList.add('hidden');
+});
+
+socket.on('adapters', (adapters) => {
+  const sel = document.getElementById('adapter-select');
+  const cur = sel.value;
+  sel.innerHTML = '';
+  adapters.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.name;
+    opt.textContent = a.display;
+    if (a.name === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+});
+
+socket.on('new_connection', (conn) => {
+  if (connections[conn.id]) return;
+  connections[conn.id] = conn;
+  totalSeen++;
+
+  addArc(conn);
+  addPoint(conn.dst_lat, conn.dst_lon,
+    conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a',
+    0.3,
+    `<div style="font-family:monospace;font-size:12px;
+      background:rgba(2,12,28,.9);border:1px solid rgba(0,212,255,.3);
+      padding:8px 12px;border-radius:6px">
+      <b style="color:${conn.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
+        ${conn.remote_ip}
+      </b><br>
+      ${conn.dst_city}, ${conn.dst_country}<br>
+      <span style="color:#ffcc00">${conn.port_name}</span>
+    </div>`
+  );
+  addRing(conn.dst_lat, conn.dst_lon,
+    conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a');
+
+  addToList(conn);
+  recalcStats();
+});
+
+socket.on('connection_closed', (data) => {
+  if (!connections[data.id]) return;
+  delete connections[data.id];
+  if (selectedConnectionId === data.id) {
+    setSelectedConnection(null);
+    renderConnectionDetail(null);
+  }
+  removeArc(data.id);
+  removeFromList(data.id);
+  recalcStats();
+});
+
+// ── Adapter wechseln ─────────────────────────────────────────────
+function setAdapter(adapter) {
+  socket.emit('set_adapter', { adapter });
+  // Verbindungsliste und Arcs leeren
+  arcsData   = [];
+  pointsData = pointsData.filter(p => p.color === COLORS.local); // Eigenen Punkt behalten
+  if (globe) {
+    globe.arcsData([]);
+    globe.pointsData(pointsData);
+  }
+  Object.keys(connections).forEach(k => {
+    delete connections[k];
+    removeFromList(k);
+  });
+  setSelectedConnection(null);
+  renderConnectionDetail(null);
+  recalcStats();
+}
+
+// ── Init ─────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  initGlobe();
+
+  // Fallback: Loading nach 8s verstecken
+  setTimeout(() => {
+    document.getElementById('loading').classList.add('hidden');
+  }, 8000);
+});
+</script>
+</body>
+</html>
