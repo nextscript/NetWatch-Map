@@ -6,6 +6,7 @@ Visualizes incoming and outgoing network connections on a 3D globe
 import threading
 import time
 import socket
+import math
 import ipaddress
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
@@ -54,6 +55,127 @@ def is_private_ip(ip: str) -> bool:
         return a.is_private or a.is_loopback or a.is_link_local or a.is_multicast or a.is_reserved
     except Exception:
         return True
+
+
+def get_preferred_local_ip() -> str:
+    """Return the preferred adapter IPv4 address, excluding loopback."""
+    return get_adapter_ip(selected_adapter)
+
+
+def is_loopback_or_wildcard_ip(ip: str) -> bool:
+    return not ip or ip.startswith('127.') or ip in ('0.0.0.0', '::', '::1')
+
+
+def get_adapter_ip(adapter_name: Optional[str]) -> str:
+    """Return an active adapter IPv4, preferring the selected adapter and ignoring loopback."""
+    try:
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+
+        candidate_names = []
+        if adapter_name and adapter_name != 'all':
+            candidate_names.append(adapter_name)
+        candidate_names.extend(name for name in addrs.keys() if name not in candidate_names)
+
+        for name in candidate_names:
+            stat = stats.get(name)
+            if stat and not stat.isup:
+                continue
+            for addr in addrs.get(name, []):
+                if addr.family != socket.AF_INET:
+                    continue
+                ip = addr.address
+                if ip and not ip.startswith('127.') and ip != '0.0.0.0':
+                    return ip
+    except Exception:
+        pass
+
+    return ''
+
+
+def get_matching_adapter_ip(remote_ip: str, adapter_name: Optional[str]) -> str:
+    """Match a remote peer to the best local IPv4 on the corresponding adapter."""
+    try:
+        remote_addr = ipaddress.ip_address(remote_ip)
+        if remote_addr.version != 4:
+            return ''
+    except Exception:
+        return ''
+
+    try:
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+
+        candidate_names = []
+        if adapter_name and adapter_name != 'all':
+            candidate_names.append(adapter_name)
+        candidate_names.extend(name for name in addrs.keys() if name not in candidate_names)
+
+        fallback_ip = ''
+        for name in candidate_names:
+            stat = stats.get(name)
+            if stat and not stat.isup:
+                continue
+            for addr in addrs.get(name, []):
+                if addr.family != socket.AF_INET:
+                    continue
+                local_ip = addr.address
+                if is_loopback_or_wildcard_ip(local_ip):
+                    continue
+                if not fallback_ip:
+                    fallback_ip = local_ip
+                try:
+                    if addr.netmask:
+                        network = ipaddress.ip_network(f'{local_ip}/{addr.netmask}', strict=False)
+                        if remote_addr in network:
+                            return local_ip
+                except Exception:
+                    continue
+        return fallback_ip
+    except Exception:
+        return ''
+
+
+def normalize_local_ip(ip: str, remote_ip: str, direction: str) -> str:
+    """Prefer the matching adapter IPv4 for incoming connections over loopback/wildcard binds."""
+    if direction == 'incoming' and is_loopback_or_wildcard_ip(ip):
+        adapter_ip = get_matching_adapter_ip(remote_ip, selected_adapter)
+        if adapter_ip:
+            return adapter_ip
+    return ip
+
+
+def get_display_ip(local_ip: str, remote_ip: str, direction: str) -> str:
+    """Choose the UI-facing primary IP without mutating the actual peer address."""
+    if direction == 'incoming':
+        return local_ip
+    return remote_ip
+
+
+def get_private_peer_geo(ip: str) -> dict:
+    """Place private/LAN peers close to this device on the map."""
+    base_lat = my_location.get('lat', 0)
+    base_lon = my_location.get('lon', 0)
+    try:
+        last_octet = int(ip.split('.')[-1])
+    except Exception:
+        last_octet = 1
+
+    angle = (last_octet % 360) * (3.141592653589793 / 180.0)
+    distance = 1.2 + (last_octet % 7) * 0.18
+    lat = max(-89.0, min(89.0, base_lat + math.sin(angle) * distance))
+    lon_scale = max(0.3, math.cos(base_lat * 3.141592653589793 / 180.0))
+    lon = ((base_lon + (math.cos(angle) * distance) / lon_scale + 540) % 360) - 180
+
+    return {
+        'lat': lat,
+        'lon': lon,
+        'city': 'Local Network',
+        'country': 'Private LAN',
+        'countryCode': '',
+        'isp': 'Private Network',
+        'ip': ip,
+    }
 
 
 def get_geo(ip: str) -> Optional[dict]:
@@ -143,13 +265,22 @@ def get_adapters() -> list:
     return adapters
 
 
-def determine_direction(conn) -> str:
+def determine_direction(conn, listener_keys: set, listener_ports: set) -> str:
     """Determine whether a connection is incoming or outgoing."""
     if conn.status in ('LISTEN',):
         return 'incoming'
-    # ESTABLISHED: if local port < 1024 or remote port < 1024 -> often server-side
     if conn.raddr and conn.laddr:
-        if conn.laddr.port < 1024 and conn.raddr.port >= 1024:
+        pid = conn.pid if conn.pid is not None else -1
+        local_ip = conn.laddr.ip or ''
+        local_port = conn.laddr.port
+        if (
+            (pid, local_ip, local_port) in listener_keys or
+            (pid, '0.0.0.0', local_port) in listener_keys or
+            (pid, '::', local_port) in listener_keys or
+            (local_ip, local_port) in listener_ports or
+            ('0.0.0.0', local_port) in listener_ports or
+            ('::', local_port) in listener_ports
+        ):
             return 'incoming'
     return 'outgoing'
 
@@ -192,6 +323,16 @@ def monitor_connections():
     while True:
         try:
             conns = psutil.net_connections(kind='inet')
+            listener_keys = set()
+            listener_ports = set()
+            for entry in conns:
+                if entry.status != 'LISTEN' or not entry.laddr:
+                    continue
+                pid = entry.pid if entry.pid is not None else -1
+                bind_ip = entry.laddr.ip or ''
+                bind_port = entry.laddr.port
+                listener_keys.add((pid, bind_ip, bind_port))
+                listener_ports.add((bind_ip, bind_port))
 
             # Adapter IPs for filtering
             adapter_ips: set = set()
@@ -210,12 +351,16 @@ def monitor_connections():
                 local_port = conn.laddr.port if conn.laddr else 0
                 remote_port = conn.raddr.port if conn.raddr else 0
 
-                if is_private_ip(remote_ip):
+                direction = determine_direction(conn, listener_keys, listener_ports)
+                local_ip = normalize_local_ip(local_ip, remote_ip, direction)
+                if direction == 'incoming' and is_loopback_or_wildcard_ip(local_ip):
+                    continue
+                if is_private_ip(remote_ip) and direction != 'incoming':
                     continue
                 if adapter_ips and local_ip not in adapter_ips:
                     continue
+                display_ip = get_display_ip(local_ip, remote_ip, direction)
 
-                direction = determine_direction(conn)
                 key = aggregate_connection_key(conn, local_ip, remote_ip, remote_port, direction)
                 entry = grouped.get(key)
                 if entry is None:
@@ -223,6 +368,7 @@ def monitor_connections():
                         'conn': conn,
                         'local_ip': local_ip,
                         'remote_ip': remote_ip,
+                        'display_ip': display_ip,
                         'remote_port': remote_port,
                         'direction': direction,
                         'local_ports': {local_port},
@@ -239,6 +385,7 @@ def monitor_connections():
                 conn = grouped_entry['conn']
                 local_ip = grouped_entry['local_ip']
                 remote_ip = grouped_entry['remote_ip']
+                display_ip = grouped_entry['display_ip']
                 remote_port = grouped_entry['remote_port']
                 direction = grouped_entry['direction']
                 local_ports = sorted(grouped_entry['local_ports'])
@@ -254,6 +401,7 @@ def monitor_connections():
                             'local_port': primary_local_port,
                             'local_ports': local_ports,
                             'local_port_count': len(local_ports),
+                            'display_ip': display_ip,
                             'status': status_str,
                             'pid': proc_info['pid'],
                             'process_name': proc_info['process_name'],
@@ -272,7 +420,7 @@ def monitor_connections():
                     active_connections[key] = {'id': key, '_pending': True}
 
                 def _process(k, rip, lip, lp, lps, rp, direc, stat, proc):
-                    geo = get_geo(rip)
+                    geo = get_private_peer_geo(rip) if is_private_ip(rip) else get_geo(rip)
                     if not geo:
                         with active_conn_lock:
                             active_connections.pop(k, None)
@@ -281,6 +429,7 @@ def monitor_connections():
                         'id': k,
                         'local_ip': lip,
                         'remote_ip': rip,
+                        'display_ip': get_display_ip(lip, rip, direc),
                         'local_port': lp,
                         'local_ports': lps,
                         'local_port_count': len(lps),
@@ -395,7 +544,7 @@ if __name__ == '__main__':
     t.start()
     print('[+] Connection monitor started')
     print()
-    print('[>] Open http://localhost:5000 in your browser')
+    print(f"[>] Open http://{get_preferred_local_ip()}:5000 in your browser")
     print('    (Ctrl+C to quit)')
     print()
 

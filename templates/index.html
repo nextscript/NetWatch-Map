@@ -20,6 +20,8 @@
     --border:    rgba(0,212,255,0.18);
     --glow:      0 0 18px rgba(0,212,255,0.35);
     --font:      'Courier New', 'Consolas', monospace;
+    --header-height: 56px;
+    --stats-height: 76px;
   }
 
   html, body {
@@ -66,6 +68,25 @@
   }
   .logo em { color: var(--red); font-style: normal; }
 
+  .mobile-side-toggle {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(255,58,58,0.08);
+    border: 1px solid rgba(255,58,58,0.22);
+    border-radius: 4px;
+    color: #ffd7d7;
+    font-family: var(--font);
+    font-size: 11px;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+  .mobile-side-toggle:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,58,58,0.18);
+  }
+
   .sep {
     width: 1px; height: 30px;
     background: var(--border);
@@ -94,8 +115,10 @@
   .rotation-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
+    justify-content: center;
+    width: 36px;
+    height: 32px;
+    padding: 0;
     background: rgba(0,212,255,0.07);
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -179,9 +202,9 @@
   /* ── Globe container ───────────────────────────────────────── */
   #globe-wrap {
     position: fixed;
-    top: 56px; left: 0;
+    top: var(--header-height); left: 0;
     width: calc(100% - 370px);
-    height: calc(100% - 56px - 76px);
+    height: calc(100% - var(--header-height) - var(--stats-height));
     overflow: hidden;
   }
   #globeViz { width: 100%; height: 100%; }
@@ -205,13 +228,29 @@
   /* ── Side panel ────────────────────────────────────────────── */
   #side {
     position: fixed;
-    top: 56px; right: 0;
+    top: var(--header-height); right: 0;
     width: 370px;
-    height: calc(100% - 56px - 76px);
+    height: calc(100% - var(--header-height) - var(--stats-height));
     background: var(--panel);
     border-left: 1px solid var(--border);
     display: flex; flex-direction: column;
     overflow: hidden;
+  }
+
+  #side-backdrop {
+    position: fixed;
+    inset: var(--header-height) 0 var(--stats-height) 0;
+    background: rgba(2, 8, 20, 0.68);
+    backdrop-filter: blur(6px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .22s ease;
+    z-index: 180;
+  }
+
+  body.side-open #side-backdrop {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .panel-header {
@@ -326,7 +365,7 @@
   #stats {
     position: fixed;
     bottom: 0; left: 0; right: 0;
-    height: 76px;
+    height: var(--stats-height);
     background: rgba(2,8,20,0.95);
     border-top: 1px solid var(--border);
     display: flex; align-items: center;
@@ -395,6 +434,180 @@
     padding: 40px 20px; text-align: center;
     color: var(--cyan); opacity: .3; font-size: 12px; line-height: 2;
   }
+
+  @media (max-width: 1100px) {
+    #header {
+      gap: 12px;
+      padding: 0 12px;
+    }
+
+    .logo {
+      font-size: 15px;
+      letter-spacing: 2px;
+    }
+
+    .sep {
+      display: none;
+    }
+
+    .adapter-wrap {
+      min-width: 0;
+      flex: 1;
+      gap: 8px;
+    }
+
+    #adapter-select {
+      min-width: 0;
+      max-width: none;
+      width: 100%;
+    }
+
+    .header-right {
+      gap: 8px;
+    }
+
+    .ip-display {
+      min-width: 0;
+    }
+  }
+
+  @media (max-width: 840px) {
+    .mobile-side-toggle {
+      display: inline-flex;
+      flex-shrink: 0;
+    }
+
+    #header {
+      height: auto;
+      min-height: 56px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      gap: 10px;
+    }
+
+    .logo {
+      order: 1;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .header-right {
+      order: 2;
+      margin-left: 0;
+      margin-right: auto;
+    }
+
+    .adapter-wrap {
+      order: 3;
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .adapter-wrap label {
+      grid-column: 1 / -1;
+      font-size: 10px;
+    }
+
+    #adapter-select {
+      min-width: 0;
+      width: 100%;
+    }
+
+    .rotation-toggle {
+      width: 36px;
+      min-width: 36px;
+      justify-self: end;
+    }
+
+    .ip-display {
+      display: none;
+    }
+
+    .live-badge {
+      font-size: 10px;
+      letter-spacing: 1px;
+    }
+
+    #globe-wrap {
+      width: 100%;
+      height: calc(100% - var(--header-height) - var(--stats-height));
+    }
+
+    #conn-detail {
+      top: 10px;
+      right: 10px;
+      left: 10px;
+      width: auto;
+      min-height: 0;
+      max-height: 44%;
+      overflow: auto;
+    }
+
+    #side {
+      width: min(88vw, 360px);
+      height: calc(100% - var(--header-height));
+      border-top: 1px solid var(--border);
+      transform: translateX(100%);
+      transition: transform .24s ease, box-shadow .24s ease;
+      z-index: 220;
+      box-shadow: none;
+    }
+
+    body.side-open #side {
+      transform: translateX(0);
+      box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
+    }
+
+    #side-backdrop {
+      inset: var(--header-height) 0 0 0;
+      z-index: 210;
+    }
+
+    #stats {
+      --stats-height: 92px;
+      padding: 10px 12px;
+      justify-content: space-between;
+      gap: 8px;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
+    .stat {
+      min-width: 72px;
+    }
+
+    .stat-val {
+      font-size: 20px;
+    }
+
+    .stat-lbl {
+      font-size: 8px;
+      letter-spacing: 1px;
+    }
+
+    .stat-divider {
+      height: 30px;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .adapter-wrap {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .rotation-toggle {
+      width: 100%;
+      min-width: 0;
+    }
+
+    #side {
+      width: min(92vw, 360px);
+    }
+  }
 </style>
 </head>
 <body>
@@ -408,6 +621,10 @@
 <!-- Header -->
 <div id="header">
   <div class="logo">NET<em>WATCH</em> MAP</div>
+  <button id="mobile-side-toggle" class="mobile-side-toggle" type="button" aria-expanded="false" aria-controls="side" onclick="toggleSidePanel()">
+    <span id="mobile-side-icon">+</span>
+    <span>Connections</span>
+  </button>
   <div class="sep"></div>
 
   <div class="adapter-wrap">
@@ -417,7 +634,6 @@
     </select>
     <button id="rotation-toggle" class="rotation-toggle" type="button" onclick="toggleRotation()">
       <span id="rotation-icon" class="rotation-icon">⏸</span>
-      <span id="rotation-label">Pause</span>
     </button>
   </div>
 
@@ -440,6 +656,7 @@
 </div>
 
 <!-- Side panel -->
+<div id="side-backdrop" onclick="closeSidePanel()"></div>
 <div id="side">
   <div class="panel-header">
     ● CONNECTIONS
@@ -499,6 +716,7 @@ let globe;
 let selectedConnectionId = null;
 let rotationEnabled = true;
 let localDeviceIp = '';
+let mobileSideOpen = false;
 
 const COLORS = {
   out:   ['rgba(0,212,255,0.9)',  'rgba(0,100,220,0.2)'],
@@ -564,7 +782,7 @@ function pickLocalDeviceIp(adapters, selectedName = 'all') {
 }
 
 function getDestinationKey(conn) {
-  return `${conn.remote_ip}:${conn.remote_port}`;
+  return `${conn.display_ip || conn.remote_ip}:${conn.remote_port}`;
 }
 
 function buildConnectionPoint(conn) {
@@ -581,7 +799,7 @@ function buildConnectionPoint(conn) {
       background:rgba(2,12,28,.9);border:1px solid rgba(0,212,255,.3);
       padding:8px 12px;border-radius:6px">
       <b style="color:${conn.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
-      ${conn.remote_ip}
+      ${conn.display_ip || conn.remote_ip}
       </b><br>
       ${conn.dst_city}, ${conn.dst_country}<br>
       <span style="color:#ffcc00">${conn.port_name}</span>
@@ -612,16 +830,15 @@ function rebuildConnectionPoints() {
 function syncRotationUI() {
   const toggle = document.getElementById('rotation-toggle');
   const icon = document.getElementById('rotation-icon');
-  const label = document.getElementById('rotation-label');
-  if (!toggle || !icon || !label) return;
+  if (!toggle || !icon) return;
 
   toggle.classList.toggle('paused', !rotationEnabled);
   toggle.setAttribute('aria-pressed', String(!rotationEnabled));
+  toggle.setAttribute('aria-label', rotationEnabled ? 'Pause rotation' : 'Resume rotation');
   toggle.title = rotationEnabled
     ? 'Pause rotation and move the map manually'
     : 'Resume automatic rotation';
   icon.textContent = rotationEnabled ? '⏸' : '▶';
-  label.textContent = rotationEnabled ? 'Pause' : 'Play';
 }
 
 function setRotationState(enabled) {
@@ -634,6 +851,46 @@ function setRotationState(enabled) {
 
 function toggleRotation() {
   setRotationState(!rotationEnabled);
+}
+
+function syncLayoutMetrics() {
+  const header = document.getElementById('header');
+  if (header) {
+    document.documentElement.style.setProperty('--header-height', `${header.offsetHeight}px`);
+  }
+}
+
+function isMobileLayout() {
+  return window.innerWidth <= 840;
+}
+
+function syncSidePanelUI() {
+  const open = isMobileLayout() && mobileSideOpen;
+  document.body.classList.toggle('side-open', open);
+
+  const toggle = document.getElementById('mobile-side-toggle');
+  const icon = document.getElementById('mobile-side-icon');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', String(open));
+  }
+  if (icon) {
+    icon.textContent = open ? 'X' : '+';
+  }
+}
+
+function openSidePanel() {
+  mobileSideOpen = true;
+  syncSidePanelUI();
+}
+
+function closeSidePanel() {
+  mobileSideOpen = false;
+  syncSidePanelUI();
+}
+
+function toggleSidePanel() {
+  mobileSideOpen = !mobileSideOpen;
+  syncSidePanelUI();
 }
 
 // ── Stats helpers ────────────────────────────────────────────────
@@ -688,7 +945,7 @@ function initGlobe() {
         <b style="color:${d.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
           ${d.direction === 'outgoing' ? '↑ OUTGOING' : '↓ INCOMING'}
         </b><br>
-        ${d.local_ip}:${d.local_port} → ${d.remote_ip}:${d.remote_port}<br>
+        ${d.local_ip}:${d.local_port} → ${(d.display_ip || d.remote_ip)}:${d.remote_port}<br>
         <span style="color:#ffcc00">${d.port_name}</span><br>
         📍 ${d.dst_city}, ${d.dst_country}<br>
         <span style="opacity:.6">${d.dst_isp}</span>
@@ -871,7 +1128,7 @@ function renderListItem(item, conn) {
       </span>
       <span class="ci-port">${conn.port_name}</span>
     </div>
-    <div class="ci-ip">${conn.remote_ip}</div>
+    <div class="ci-ip">${conn.display_ip || conn.remote_ip}</div>
     <div class="ci-location">📍 ${conn.dst_city}, ${conn.dst_country} ${flag}</div>
     <div class="ci-isp">${conn.dst_isp || ''}</div>
     <div class="ci-isp">${escapeHtml(localPortInfo)}</div>
@@ -962,6 +1219,9 @@ function selectConnection(conn) {
 
 function focusConnection(conn) {
   selectConnection(conn);
+  if (isMobileLayout()) {
+    closeSidePanel();
+  }
   globe.controls().autoRotate = false;
   globe.pointOfView(
     { lat: conn.dst_lat, lng: conn.dst_lon, altitude: 1.8 },
@@ -1081,6 +1341,22 @@ function setAdapter(adapter) {
 // ── Init ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   initGlobe();
+  syncLayoutMetrics();
+  syncSidePanelUI();
+
+  window.addEventListener('resize', () => {
+    syncLayoutMetrics();
+    if (!isMobileLayout()) {
+      mobileSideOpen = false;
+    }
+    syncSidePanelUI();
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && isMobileLayout()) {
+      closeSidePanel();
+    }
+  });
 
   // Fallback: Loading nach 8s verstecken
   setTimeout(() => {
