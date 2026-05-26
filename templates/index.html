@@ -744,9 +744,10 @@ function hashString(value) {
 }
 
 function getPointStyle(conn) {
+  const isSelected = selectedConnectionId && conn?.id === selectedConnectionId;
   return {
-    radius: 0.3,
-    altitude: 0,
+    radius: isSelected ? 0.5 : 0.3,
+    altitude: isSelected ? 0.02 : 0,
   };
 }
 
@@ -787,10 +788,14 @@ function getDestinationKey(conn) {
 
 function buildConnectionPoint(conn) {
   const pointStyle = getPointStyle(conn);
+  const isSelected = selectedConnectionId && conn?.id === selectedConnectionId;
+  const pointColor = isSelected
+    ? '#ffd24a'
+    : (conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a');
   return {
     lat: conn.dst_lat,
     lng: conn.dst_lon,
-    color: conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a',
+    color: pointColor,
     radius: pointStyle.radius,
     altitude: pointStyle.altitude,
     connectionId: conn.id,
@@ -1157,6 +1162,7 @@ function setSelectedConnection(conn) {
 function clearSelection() {
   setSelectedConnection(null);
   renderConnectionDetail(null);
+  rebuildConnectionPoints();
 }
 
 function renderConnectionDetail(conn) {
@@ -1215,23 +1221,55 @@ function removeFromList(id) {
 function selectConnection(conn) {
   setSelectedConnection(conn);
   renderConnectionDetail(conn);
+  rebuildConnectionPoints();
+}
+
+function hasValidGeoTarget(conn) {
+  return Number.isFinite(Number(conn?.dst_lat)) && Number.isFinite(Number(conn?.dst_lon));
+}
+
+function focusMapOnTarget(lat, lng, altitude = 0.65, duration = 1500) {
+  if (!globe) return;
+  globe.controls().autoRotate = false;
+  globe.pointOfView(
+    { lat: Number(lat), lng: Number(lng), altitude },
+    duration
+  );
 }
 
 function focusConnection(conn) {
   selectConnection(conn);
+  if (!hasValidGeoTarget(conn)) return;
+
+  const focusDelay = isMobileLayout() ? 180 : 0;
   if (isMobileLayout()) {
     closeSidePanel();
+    setTimeout(() => {
+      const globeEl = document.getElementById('globeViz');
+      if (globeEl) {
+        globe.width(globeEl.offsetWidth);
+        globe.height(globeEl.offsetHeight);
+      }
+    }, focusDelay / 2);
   }
-  globe.controls().autoRotate = false;
-  globe.pointOfView(
-    { lat: conn.dst_lat, lng: conn.dst_lon, altitude: 1.8 },
-    800
-  );
+
+  setTimeout(() => {
+    focusMapOnTarget(conn.dst_lat, conn.dst_lon);
+    addRing(
+      conn.dst_lat,
+      conn.dst_lon,
+      '#ffd24a',
+      4.2,
+      3.4,
+      1200
+    );
+  }, focusDelay);
+
   setTimeout(() => {
     if (rotationEnabled && globe?.controls()) {
       globe.controls().autoRotate = true;
     }
-  }, 5000);
+  }, 5000 + focusDelay);
 }
 
 // ── Socket.IO ────────────────────────────────────────────────────
