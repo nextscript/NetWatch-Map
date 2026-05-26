@@ -1,107 +1,99 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NETWATCH MAP - Projektbeschreibung</title>
-</head>
 <body>
   <h1>NETWATCH MAP</h1>
   <p>
-    NETWATCH MAP ist eine lokale Webanwendung zur Live-Visualisierung von
-    Netzwerkverbindungen. Die App ueberwacht aktive TCP- und UDP-Verbindungen
-    auf dem aktuellen System und zeigt diese in Echtzeit auf einem interaktiven
-    3D-Globus an.
+    NETWATCH MAP is a local web application for live visualization of network
+    connections. The app monitors active TCP and UDP connections on the current
+    system and displays them in real time on an interactive 3D globe.
   </p>
 
-  <h2>Was die App macht</h2>
+  <h2>What the app does</h2>
   <ul>
-    <li>Erfasst laufend aktive Internetverbindungen des Computers.</li>
-    <li>Unterscheidet zwischen eingehenden und ausgehenden Verbindungen.</li>
-    <li>Filtert private, lokale und nicht relevante IP-Adressen heraus.</li>
-    <li>Bestimmt zu entfernten IPs Standortdaten wie Land, Stadt und ISP.</li>
-    <li>Zeigt jede Verbindung als animierte Linie auf einem 3D-Globus.</li>
-    <li>Listet erkannte Verbindungen parallel in einer Seitenleiste auf.</li>
-    <li>Zeigt beim Anklicken einer Verbindung Zusatzinfos in einer Toolbox auf der Karte.</li>
-    <li>Ordnet Verbindungen dem verwendeten Prozess bzw. der Anwendung zu.</li>
+    <li>Continuously detects active internet connections on the computer.</li>
+    <li>Distinguishes between incoming and outgoing connections.</li>
+    <li>Filters private, local, and irrelevant IP addresses.</li>
+    <li>Resolves remote IPs into location data such as country, city, and ISP.</li>
+    <li>Displays every connection as an animated line on a 3D globe.</li>
+    <li>Lists detected connections in a live side panel.</li>
+    <li>Shows additional connection details in a toolbox on the map when clicked.</li>
+    <li>Maps connections to the application or process using them.</li>
   </ul>
 
-  <h2>Live-Funktionen</h2>
+  <h2>Live features</h2>
   <ul>
-    <li>Neue Verbindungen werden automatisch per WebSocket an den Browser gesendet.</li>
-    <li>Geschlossene Verbindungen werden direkt aus Liste und Karte entfernt.</li>
-    <li>Der Globus fokussiert sich beim Anklicken einer Verbindung auf das Ziel.</li>
-    <li>Aktive Verbindungen werden farblich nach Richtung hervorgehoben.</li>
-    <li>Statistiken zu Gesamtzahl, Richtungen und betroffenen Laendern werden live aktualisiert.</li>
+    <li>New connections are automatically pushed to the browser via WebSocket.</li>
+    <li>Closed connections are removed from the list and map immediately.</li>
+    <li>Clicking a connection focuses the globe on the remote destination.</li>
+    <li>Active connections are color-coded by direction.</li>
+    <li>Statistics for total connections, direction, and affected countries update live.</li>
   </ul>
 
-  <h2>Details pro Verbindung</h2>
-  <p>Zu jeder Verbindung koennen unter anderem folgende Informationen angezeigt werden:</p>
+  <h2>Details shown per connection</h2>
+  <p>The app can display the following information for each connection:</p>
   <ul>
-    <li>Lokale IP-Adresse und lokaler Port</li>
-    <li>Remote-IP-Adresse und Remote-Port</li>
-    <li>Portname bzw. bekannter Dienst wie HTTPS, DNS oder SSH</li>
-    <li>Status der Verbindung</li>
-    <li>Richtung: eingehend oder ausgehend</li>
-    <li>Zielland, Stadt, Laendercode und Internetanbieter</li>
-    <li>Prozessname der Anwendung</li>
-    <li>PID des Prozesses</li>
-    <li>Pfad der ausfuehrbaren Datei, sofern auslesbar</li>
+    <li>Local IP address and local port</li>
+    <li>Remote IP address and remote port</li>
+    <li>Port name or known service such as HTTPS, DNS, or SSH</li>
+    <li>Connection status</li>
+    <li>Direction: incoming or outgoing</li>
+    <li>Destination country, city, country code, and ISP</li>
+    <li>Process or application name</li>
+    <li>Process ID</li>
+    <li>Executable path when available</li>
   </ul>
 
-  <h2>Benutzeroberflaeche</h2>
+  <h2>User interface</h2>
   <ul>
-    <li>Obere Leiste mit Adapter-Auswahl, Statusanzeige und eigener IP/Standortanzeige</li>
-    <li>3D-Globus mit animierten Verbindungslinien, Punkten und Ringen</li>
-    <li>Seitenpanel mit laufender Verbindungsliste</li>
-    <li>Toolbox auf der Karte fuer Detailinformationen zur ausgewaehlten Verbindung</li>
-    <li>Untere Statistikleiste mit Live-Kennzahlen</li>
+    <li>Top bar with adapter selection, live status, and local IP/location display</li>
+    <li>3D globe with animated connection arcs, points, and pulse rings</li>
+    <li>Side panel with a live connection list</li>
+    <li>Toolbox overlay on the map for selected connection details</li>
+    <li>Bottom statistics bar with real-time metrics</li>
   </ul>
 
-  <h2>Technischer Aufbau</h2>
+  <h2>Technical structure</h2>
   <ul>
-    <li>Backend mit Python, Flask und Flask-SocketIO</li>
-    <li>Netzwerkueberwachung ueber psutil</li>
-    <li>Geolokalisierung ueber ip-api.com mit Cache und Rate-Limit</li>
-    <li>Frontend mit HTML, CSS und JavaScript</li>
-    <li>3D-Visualisierung ueber Globe.gl</li>
-    <li>Echtzeitkommunikation zwischen Backend und Browser per Socket.IO</li>
+    <li>Backend built with Python, Flask, and Flask-SocketIO</li>
+    <li>Network monitoring powered by psutil</li>
+    <li>Geolocation provided by ip-api.com with caching and rate limiting</li>
+    <li>Frontend built with HTML, CSS, and JavaScript</li>
+    <li>3D visualization powered by Globe.gl</li>
+    <li>Real-time communication between backend and browser via Socket.IO</li>
   </ul>
 
-  <h2>Ablauf der App</h2>
+  <h2>How the app works</h2>
   <ol>
-    <li>Beim Start ermittelt die App die oeffentliche IP und den groben Standort des Geraets.</li>
-    <li>Ein Hintergrundprozess scannt wiederholt aktive Netzwerkverbindungen.</li>
-    <li>Relevante externe Verbindungen werden gefiltert und verarbeitet.</li>
-    <li>Fuer neue Ziel-IPs werden Geodaten geladen und zwischengespeichert.</li>
-    <li>Prozessinformationen der jeweiligen Verbindung werden ausgelesen.</li>
-    <li>Die Daten werden in Echtzeit an die Browseroberflaeche uebertragen.</li>
-    <li>Die Oberflaeche aktualisiert Globus, Liste, Toolbox und Statistik automatisch.</li>
+    <li>On startup, the app determines the device's public IP and approximate location.</li>
+    <li>A background worker repeatedly scans active network connections.</li>
+    <li>Relevant external connections are filtered and processed.</li>
+    <li>New remote IPs are geolocated and cached.</li>
+    <li>Process information for each connection is collected.</li>
+    <li>The data is sent to the browser interface in real time.</li>
+    <li>The UI updates the globe, list, toolbox, and statistics automatically.</li>
   </ol>
 
-  <h2>Besondere Merkmale</h2>
+  <h2>Key features</h2>
   <ul>
-    <li>Lokale Ausfuehrung ohne externe Cloud-Plattform</li>
-    <li>Fokus auf visuelle Netzwerktransparenz in Echtzeit</li>
-    <li>Zuordnung von Verbindungen zu konkreten Anwendungen</li>
-    <li>Adapter-basierter Filter fuer gezielte Analyse einzelner Netzwerkschnittstellen</li>
-    <li>Kombination aus Monitoring, Geolokalisierung und 3D-Darstellung</li>
+    <li>Runs locally without relying on a cloud platform</li>
+    <li>Focus on real-time visual network transparency</li>
+    <li>Assigns live connections to specific applications</li>
+    <li>Adapter-based filtering for targeted network interface analysis</li>
+    <li>Combines monitoring, geolocation, and 3D visualization</li>
   </ul>
 
-  <h2>Einsatzmoeglichkeiten</h2>
+  <h2>Possible use cases</h2>
   <ul>
-    <li>Analyse, welche Programme Internetverbindungen aufbauen</li>
-    <li>Sichtbarmachung externer Ziele und Verbindungswege</li>
-    <li>Ueberwachung von Netzwerkaktivitaeten auf einem lokalen Rechner</li>
-    <li>Demonstration und Visualisierung fuer Security-, Netzwerk- oder Admin-Zwecke</li>
+    <li>Analyze which programs are creating internet connections</li>
+    <li>Visualize external destinations and connection paths</li>
+    <li>Monitor network activity on a local computer</li>
+    <li>Demonstrate traffic patterns for security, networking, or admin use</li>
   </ul>
 
-  <h2>Hinweis</h2>
+  <h2>Note</h2>
   <p>
-    Die Anwendung ist auf Live-Monitoring und Visualisierung ausgelegt. Die
-    Genauigkeit von Geodaten haengt vom verwendeten IP-Geolocation-Dienst ab.
-    Manche Prozesspfade oder Prozessnamen koennen je nach Berechtigungen des
-    Betriebssystems nur eingeschraenkt verfuegbar sein.
+    The application is designed for live monitoring and visualization. The
+    accuracy of geolocation data depends on the IP geolocation service in use.
+    Some process names or executable paths may be limited by operating system
+    permissions.
   </p>
 </body>
 </html>
