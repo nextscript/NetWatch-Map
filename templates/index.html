@@ -165,6 +165,7 @@
     backdrop-filter: blur(8px);
     min-height: 148px;
     z-index: 120;
+    display: none;
   }
 
   /* ── Side panel ────────────────────────────────────────────── */
@@ -398,11 +399,7 @@
 <!-- Globe -->
 <div id="globe-wrap">
   <div id="globeViz"></div>
-  <div id="conn-detail">
-    <div class="detail-empty">
-      Click a connection to view details and the application in use.
-    </div>
-  </div>
+  <div id="conn-detail"></div>
 </div>
 
 <!-- Side panel -->
@@ -571,6 +568,12 @@ function initGlobe() {
     .pointAltitude(0.008)
     .pointRadius('radius')
     .pointLabel(d => d._label || '')
+    .onPointClick(point => {
+      if (point?.connectionId && connections[point.connectionId]) {
+        selectConnection(connections[point.connectionId]);
+      }
+    })
+    .onGlobeClick(() => clearSelection())
     // Rings
     .ringsData([])
     .ringColor('color')
@@ -629,8 +632,8 @@ function removeArc(id) {
   globe.arcsData(arcsData);
 }
 
-function addPoint(lat, lng, color, radius, label) {
-  pointsData.push({ lat, lng, color, radius, _label: label });
+function addPoint(lat, lng, color, radius, label, extra = {}) {
+  pointsData.push({ lat, lng, color, radius, _label: label, ...extra });
   globe.pointsData(pointsData);
 }
 
@@ -699,18 +702,22 @@ function setSelectedConnection(conn) {
   }
 }
 
+function clearSelection() {
+  setSelectedConnection(null);
+  renderConnectionDetail(null);
+}
+
 function renderConnectionDetail(conn) {
   const detail = document.getElementById('conn-detail');
   if (!detail) return;
 
   if (!conn) {
-    detail.innerHTML = `
-      <div class="detail-empty">
-        Click a connection to view details and the application in use.
-      </div>
-    `;
+    detail.innerHTML = '';
+    detail.style.display = 'none';
     return;
   }
+
+  detail.style.display = 'block';
 
   const directionLabel = conn.direction === 'outgoing' ? 'Outgoing' : 'Incoming';
   const pidText = conn.pid ?? 'Unknown';
@@ -748,9 +755,13 @@ function removeFromList(id) {
 }
 
 // ── Focus / zoom on connection ───────────────────────────────────
-function focusConnection(conn) {
+function selectConnection(conn) {
   setSelectedConnection(conn);
   renderConnectionDetail(conn);
+}
+
+function focusConnection(conn) {
+  selectConnection(conn);
   globe.controls().autoRotate = false;
   globe.pointOfView(
     { lat: conn.dst_lat, lng: conn.dst_lon, altitude: 1.8 },
@@ -832,7 +843,8 @@ socket.on('new_connection', (conn) => {
       </b><br>
       ${conn.dst_city}, ${conn.dst_country}<br>
       <span style="color:#ffcc00">${conn.port_name}</span>
-    </div>`
+    </div>`,
+    { connectionId: conn.id }
   );
   addRing(conn.dst_lat, conn.dst_lon,
     conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a');
@@ -845,11 +857,12 @@ socket.on('connection_closed', (data) => {
   if (!connections[data.id]) return;
   delete connections[data.id];
   if (selectedConnectionId === data.id) {
-    setSelectedConnection(null);
-    renderConnectionDetail(null);
+    clearSelection();
   }
   removeArc(data.id);
   removeFromList(data.id);
+  pointsData = pointsData.filter(p => p.connectionId !== data.id);
+  globe.pointsData(pointsData);
   recalcStats();
 });
 
@@ -867,8 +880,7 @@ function setAdapter(adapter) {
     delete connections[k];
     removeFromList(k);
   });
-  setSelectedConnection(null);
-  renderConnectionDetail(null);
+  clearSelection();
   recalcStats();
 }
 
