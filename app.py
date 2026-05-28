@@ -8,6 +8,9 @@ import time
 import socket
 import math
 import ipaddress
+import platform
+import re
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from flask import Flask, render_template, jsonify, request
@@ -218,6 +221,123 @@ def get_geo(ip: str) -> Optional[dict]:
     except Exception as e:
         print(f'[GEO] Error for {ip}: {e}')
     return None
+
+
+def parse_traceroute_output(output: str) -> list:
+    """Extract hop numbers and IPs from Windows tracert or Unix traceroute output."""
+    hops = []
+    seen = set()
+    ip_pattern = re.compile(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])')
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        hop_match = re.match(r'^(\d+)\b', stripped)
+        if not hop_match:
+            continue
+
+        hop_no = int(hop_match.group(1))
+        ips = []
+        for candidate in ip_pattern.findall(stripped):
+            try:
+                ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            if candidate not in ips:
+                ips.append(candidate)
+
+        if not ips:
+            if hop_no not in seen:
+                hops.append({'hop': hop_no, 'ip': None, 'status': 'timeout'})
+                seen.add(hop_no)
+            continue
+
+        ip = ips[-1]
+        if hop_no in seen:
+            continue
+        hops.append({'hop': hop_no, 'ip': ip, 'status': 'ok'})
+        seen.add(hop_no)
+
+    return hops
+
+
+def build_traceroute_command(target_ip: str) -> list:
+    if platform.system().lower().startswith('win'):
+        return ['tracert', '-d', '-w', '1000', '-h', '30', target_ip]
+    return ['traceroute', '-n', '-w', '1', '-q', '1', '-m', '30', target_ip]
+
+
+def run_traceroute(target_ip: str) -> dict:
+    """Run a native traceroute and enrich public hops with geolocation."""
+    try:
+        ipaddress.ip_address(target_ip)
+    except ValueError:
+        return {'ok': False, 'error': 'Invalid target IP'}
+
+    if is_private_ip(target_ip):
+        return {'ok': False, 'error': 'Traceroute target must be a public IP'}
+
+    command = build_traceroute_command(target_ip)
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            encoding='utf-8',
+            errors='replace',
+        )
+    except FileNotFoundError:
+        tool_name = command[0]
+        return {'ok': False, 'error': f'{tool_name} was not found on this system'}
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or '') + '\n' + (exc.stderr or '')
+        completed = None
+    else:
+        output = (completed.stdout or '') + '\n' + (completed.stderr or '')
+
+    hops = parse_traceroute_output(output)
+    enriched = []
+    last_geo_ip = None
+    for hop in hops:
+        ip = hop.get('ip')
+        geo = None
+        private = False
+        if ip:
+            private = is_private_ip(ip)
+            geo = get_private_peer_geo(ip) if private else get_geo(ip)
+            if geo:
+                last_geo_ip = ip
+        enriched.append({
+            'hop': hop['hop'],
+            'ip': ip,
+            'status': hop.get('status', 'ok'),
+            'is_private': private,
+            'lat': geo.get('lat') if geo else None,
+            'lon': geo.get('lon') if geo else None,
+            'city': geo.get('city', '') if geo else '',
+            'country': geo.get('country', '') if geo else '',
+            'countryCode': geo.get('countryCode', '') if geo else '',
+            'isp': geo.get('isp', '') if geo else '',
+        })
+
+    if not enriched:
+        error = 'Traceroute returned no hops'
+        if completed and completed.returncode not in (0, None):
+            error = output.strip()[-300:] or error
+        return {'ok': False, 'error': error, 'raw': output[-2000:]}
+
+    return {
+        'ok': True,
+        'target_ip': target_ip,
+        'command': ' '.join(command),
+        'hops': enriched,
+        'reached_target': any(h.get('ip') == target_ip for h in enriched),
+        'last_geo_ip': last_geo_ip,
+        'raw': output[-4000:],
+    }
 
 
 def get_my_location() -> dict:
@@ -496,6 +616,20 @@ def api_set_adapter():
     data = request.get_json(force=True)
     selected_adapter = data.get('adapter', 'all')
     return jsonify({'ok': True, 'adapter': selected_adapter})
+
+
+@app.route('/api/traceroute', methods=['POST'])
+def api_traceroute():
+    data = request.get_json(force=True)
+    target_ip = data.get('ip', '')
+    connection_id = data.get('connection_id', '')
+
+    if connection_id:
+        with active_conn_lock:
+            conn = active_connections.get(connection_id, {})
+        target_ip = conn.get('remote_ip') or target_ip
+
+    return jsonify(run_traceroute(str(target_ip).strip()))
 
 
 @socketio.on('connect')
