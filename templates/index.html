@@ -344,6 +344,31 @@
   #conn-list::-webkit-scrollbar { width: 4px; }
   #conn-list::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.2); border-radius: 2px; }
 
+  .conn-search-wrap {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(0,212,255,0.1);
+    flex-shrink: 0;
+  }
+  #conn-search {
+    width: 100%;
+    height: 32px;
+    background: rgba(0,212,255,0.06);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 11px;
+    outline: none;
+    padding: 0 10px;
+  }
+  #conn-search:focus {
+    border-color: var(--cyan);
+    box-shadow: var(--glow);
+  }
+  #conn-search::placeholder {
+    color: rgba(192,232,255,0.38);
+  }
+
   #trace-history {
     flex: 0 0 150px;
     overflow-y: auto;
@@ -877,6 +902,9 @@
     ● CONNECTIONS
     <span id="conn-count-badge">0</span>
   </div>
+  <div class="conn-search-wrap">
+    <input id="conn-search" type="search" placeholder="Search process, country, port, IP..." oninput="setConnectionSearch(this.value)">
+  </div>
   <div id="conn-list">
     <div id="empty-state">
       Waiting for connections...<br>
@@ -946,6 +974,7 @@ let selectedConnectionGroupIds = [];
 let rotationEnabled = true;
 let localDeviceIp = '';
 let mobileSideOpen = false;
+let connectionSearchQuery = '';
 
 const FILTER_STORAGE_KEY = 'netwatch.visibilityFilters';
 let visibilityFilters = loadVisibilityFilters();
@@ -1019,6 +1048,46 @@ function isConnectionVisible(conn) {
   if (!conn) return false;
   if (conn.direction === 'incoming') return visibilityFilters.incoming;
   return visibilityFilters.outgoing;
+}
+
+function getConnectionSearchText(conn) {
+  return [
+    conn.process_name,
+    conn.process_path,
+    conn.display_ip,
+    conn.remote_ip,
+    conn.local_ip,
+    conn.local_port,
+    ...(conn.local_ports || []),
+    conn.remote_port,
+    conn.port_name,
+    conn.direction,
+    conn.status,
+    conn.dst_city,
+    conn.dst_country,
+    conn.dst_country_code,
+    conn.dst_isp,
+    conn.pid,
+  ].filter(value => value !== undefined && value !== null)
+    .join(' ')
+    .toLowerCase();
+}
+
+function matchesConnectionSearch(conn) {
+  const query = connectionSearchQuery.trim().toLowerCase();
+  if (!query) return true;
+  const haystack = getConnectionSearchText(conn);
+  return query.split(/\s+/).every(term => haystack.includes(term));
+}
+
+function isConnectionListVisible(conn) {
+  return isConnectionVisible(conn) && matchesConnectionSearch(conn);
+}
+
+function setConnectionSearch(value) {
+  connectionSearchQuery = value || '';
+  updateConnectionListVisibility();
+  recalcStats();
 }
 
 function getVisibleArcs() {
@@ -1097,7 +1166,7 @@ function updateConnectionListVisibility() {
   Object.values(connections).forEach(conn => {
     if (!conn || conn._pending) return;
     const item = document.getElementById(safeId(conn.id));
-    if (item) item.classList.toggle('filtered-out', !isConnectionVisible(conn));
+    if (item) item.classList.toggle('filtered-out', !isConnectionListVisible(conn));
   });
 }
 
@@ -1352,7 +1421,7 @@ function toggleSidePanel() {
 
 // ── Stats helpers ────────────────────────────────────────────────
 function recalcStats() {
-  const active = Object.values(connections).filter(c => !c._pending && isConnectionVisible(c));
+  const active = Object.values(connections).filter(c => !c._pending && isConnectionListVisible(c));
   const countries = new Set(active.map(c => c.dst_country).filter(Boolean));
   const out = active.filter(c => c.direction === 'outgoing').length;
   const ins = active.filter(c => c.direction === 'incoming').length;
@@ -1561,7 +1630,7 @@ function addToList(conn) {
 
   item.addEventListener('click', () => focusConnection(connections[conn.id] || conn));
   renderListItem(item, conn);
-  item.classList.toggle('filtered-out', !isConnectionVisible(conn));
+  item.classList.toggle('filtered-out', !isConnectionListVisible(conn));
   list.insertBefore(item, list.firstChild);
 
   // Limit list to 150 entries
@@ -1602,7 +1671,7 @@ function updateListItem(conn) {
   const item = document.getElementById(safeId(conn.id));
   if (!item) return;
   renderListItem(item, conn);
-  item.classList.toggle('filtered-out', !isConnectionVisible(conn));
+  item.classList.toggle('filtered-out', !isConnectionListVisible(conn));
 }
 
 function setSelectedConnection(conn) {
