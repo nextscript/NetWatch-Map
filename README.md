@@ -11,7 +11,7 @@
   <h2>How to run</h2>
   <ol>
     <li>Install Python 3.10 or newer and make sure <code>python</code> or <code>py -3</code> is available.</li>
-    <li>Run <code>start.bat</code> from the project folder.</li>
+    <li>Run <code>start.bat</code> or <code>start.sh</code> from the project folder.</li>
     <li>The launcher installs the required dependencies automatically.</li>
     <li>Open <code>http://localhost:5000</code> in your browser.</li>
   </ol>
