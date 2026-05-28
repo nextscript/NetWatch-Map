@@ -32,6 +32,7 @@ reverse_dns_cache_lock = threading.Lock()
 
 active_connections: dict = {}   # conn_key → conn_data
 active_conn_lock = threading.Lock()
+destination_seen_counts: dict = {}
 process_io_snapshots: dict = {}
 network_io_snapshot: Optional[tuple] = None
 
@@ -554,6 +555,16 @@ def aggregate_connection_key(conn, local_ip: str, remote_ip: str, remote_port: i
     return f"{local_ip}|{remote_ip}|{remote_port}|{direction}|{pid}"
 
 
+def aggregate_destination_key(geo: dict) -> str:
+    """Group equivalent globe destination points for reconnect counters."""
+    country_code = (geo.get('countryCode') or '').lower()
+    country_name = (geo.get('country') or '').lower()
+    city_name = (geo.get('city') or '').lower()
+    country_key = country_code or country_name or 'unknown-country'
+    city_key = city_name or 'unknown-city'
+    return f"{country_key}|{city_key}"
+
+
 def monitor_connections():
     """Background thread that monitors active TCP/UDP connections."""
     global selected_adapter
@@ -694,6 +705,10 @@ def monitor_connections():
                         with active_conn_lock:
                             active_connections.pop(k, None)
                         return
+                    destination_key = aggregate_destination_key(geo)
+                    with active_conn_lock:
+                        destination_seen_counts[destination_key] = destination_seen_counts.get(destination_key, 0) + 1
+                        destination_seen_count = destination_seen_counts[destination_key]
                     data = {
                         'id': k,
                         'local_ip': lip,
@@ -722,6 +737,8 @@ def monitor_connections():
                         'dst_country': geo['country'],
                         'dst_country_code': geo['countryCode'],
                         'dst_isp': geo['isp'],
+                        'destination_seen_count': destination_seen_count,
+                        'destination_reconnect_count': max(0, destination_seen_count - 1),
                     }
                     with active_conn_lock:
                         active_connections[k] = data

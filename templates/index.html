@@ -959,6 +959,8 @@ const connections  = {};   // id → data
 let arcsData       = [];
 let pointsData     = [];
 let ringsData      = [];
+let persistentRingsData = [];
+let transientRingsData = [];
 let traceArcsData  = [];
 let tracePointsData = [];
 let traceTimers    = [];
@@ -974,6 +976,7 @@ let rotationEnabled = true;
 let localDeviceIp = '';
 let mobileSideOpen = false;
 let connectionSearchQuery = '';
+const HOT_DESTINATION_THRESHOLD = 10;
 
 const FILTER_STORAGE_KEY = 'netwatch.visibilityFilters';
 let visibilityFilters = loadVisibilityFilters();
@@ -1152,6 +1155,20 @@ function getVisiblePoints() {
     : [...connectionPoints, ...localPoints];
 }
 
+function getVisibleRings() {
+  const visiblePersistentRings = persistentRingsData.filter(ring => {
+    if (Array.isArray(ring.connectionIds) && ring.connectionIds.length) {
+      return ring.connectionIds.some(id => isConnectionVisible(connections[id]));
+    }
+    if (!ring.destinationKey) return true;
+    return Object.values(connections).some(conn =>
+      conn && !conn._pending && getDestinationKey(conn) === ring.destinationKey && isConnectionVisible(conn)
+    );
+  });
+  const visibleTransientRings = transientRingsData.filter(ring => !ring.isTrace || visibilityFilters.trace);
+  return [...visiblePersistentRings, ...visibleTransientRings];
+}
+
 function renderGlobeArcs() {
   if (!globe) return;
   globe.arcsData(getVisibleArcs());
@@ -1160,6 +1177,11 @@ function renderGlobeArcs() {
 function renderGlobePoints() {
   if (!globe) return;
   globe.pointsData(getVisiblePoints());
+}
+
+function renderGlobeRings() {
+  if (!globe) return;
+  globe.ringsData(getVisibleRings());
 }
 
 function updateConnectionListVisibility() {
@@ -1193,6 +1215,7 @@ function applyVisibilityFilters() {
   syncFilterUI();
   renderGlobeArcs();
   renderGlobePoints();
+  renderGlobeRings();
   updateConnectionListVisibility();
   recalcStats();
 }
@@ -1310,6 +1333,8 @@ function buildConnectionPoint(conn, group = [conn]) {
   const groupedPorts = [...new Set(group.map(item => item.port_name).filter(Boolean))].slice(0, 3);
   const groupedIps = [...new Set(group.map(item => item.display_ip || item.remote_ip).filter(Boolean))];
   const groupedHostnames = [...new Set(group.map(item => item.remote_hostname).filter(Boolean))].slice(0, 3);
+  const seenCount = Math.max(0, ...group.map(item => Number(item.destination_seen_count) || 0));
+  const reconnectCount = Math.max(0, seenCount - 1);
   const countryLabel = conn.dst_country || conn.dst_country_code || 'Unknown country';
   const cityLabel = conn.dst_city || 'Unknown city';
   return {
@@ -1330,9 +1355,29 @@ function buildConnectionPoint(conn, group = [conn]) {
       ${groupedIps.length} server IP${groupedIps.length === 1 ? '' : 's'}<br>
       ${groupedHostnames.length ? `<span style="opacity:.7">${escapeHtml(groupedHostnames.join(', '))}</span><br>` : ''}
       <span style="color:#ffcc00">${escapeHtml(groupedPorts.join(', ') || conn.port_name)}</span><br>
+      ${seenCount ? `<span style="color:#7dffb2">${seenCount} CONNECT${seenCount === 1 ? '' : 'S'} / ${reconnectCount} RECONNECT${reconnectCount === 1 ? '' : 'S'}</span><br>` : ''}
       ${groupCount > 1 ? `<span style="color:#ff4dff">${groupCount} CONNECTIONS</span>` : ''}
     </div>`,
+    destinationSeenCount: seenCount,
+    destinationReconnectCount: reconnectCount,
+    hotDestination: seenCount > HOT_DESTINATION_THRESHOLD,
   };
+}
+
+function syncPersistentReconnectRings(destinationPoints) {
+  persistentRingsData = destinationPoints
+    .filter(point => point.hotDestination)
+    .map(point => ({
+      lat: point.lat,
+      lng: point.lng,
+      color: point.color,
+      maxR: Math.min(1.8, 0.75 + point.destinationSeenCount * 0.025),
+      speed: 0.85,
+      period: 1500,
+      destinationKey: point.destinationKey,
+      connectionIds: point.connectionIds || [],
+    }));
+  renderGlobeRings();
 }
 
 function rebuildConnectionPoints() {
@@ -1349,6 +1394,7 @@ function rebuildConnectionPoints() {
   const destinationPoints = [...destinationMap.values()].map(group => buildConnectionPoint(group[0], group));
   pointsData = [...localPoints, ...destinationPoints];
   renderGlobePoints();
+  syncPersistentReconnectRings(destinationPoints);
 
   if (selectedConnectionId && !connections[selectedConnectionId]) {
     clearSelection();
@@ -1606,13 +1652,16 @@ function updatePoint(connectionId, lat, lng, color, radius, label, extra = {}) {
   if (changed) renderGlobePoints();
 }
 
-function addRing(lat, lng, color, maxR = 2.5, speed = 2.5, period = 900) {
-  ringsData.push({ lat, lng, color, maxR, speed, period });
-  globe.ringsData(ringsData);
+function addRing(lat, lng, color, maxR = 2.5, speed = 2.5, period = 900, extra = {}) {
+  const ring = { lat, lng, color, maxR, speed, period, ...extra };
+  transientRingsData.push(ring);
+  ringsData = [...persistentRingsData, ...transientRingsData];
+  renderGlobeRings();
   // Auto-remove after a few seconds
   setTimeout(() => {
-    ringsData.shift();
-    globe.ringsData(ringsData);
+    transientRingsData = transientRingsData.filter(item => item !== ring);
+    ringsData = [...persistentRingsData, ...transientRingsData];
+    renderGlobeRings();
   }, period * 4);
 }
 
@@ -1818,8 +1867,10 @@ function clearTraceroute() {
   clearTraceTimers();
   traceArcsData = [];
   tracePointsData = [];
+  transientRingsData = transientRingsData.filter(ring => !ring.isTrace);
   renderGlobeArcs();
   renderGlobePoints();
+  renderGlobeRings();
   setTraceStatus('');
   const list = document.getElementById('trace-hop-list');
   if (list) list.innerHTML = '';
@@ -2099,7 +2150,7 @@ function animateTraceroute(data) {
         _label: buildTracePointLabel(hop),
       });
       renderGlobePoints();
-      addRing(hop.lat, hop.lon, COLORS.tracePoint, 0.9, 2.1, 1200);
+      addRing(hop.lat, hop.lon, COLORS.tracePoint, 0.9, 2.1, 1200, { isTrace: true });
     }, index * 520));
 
     const prev = index === 0
@@ -2317,10 +2368,13 @@ function setAdapter(adapter) {
   // Clear connection list and arcs
   arcsData   = [];
   pointsData = pointsData.filter(p => p.color === COLORS.local); // Keep local point
+  persistentRingsData = [];
+  transientRingsData = transientRingsData.filter(ring => ring.isTrace);
   clearTraceroute();
   if (globe) {
     renderGlobeArcs();
     renderGlobePoints();
+    renderGlobeRings();
   }
   Object.keys(connections).forEach(k => {
     delete connections[k];
