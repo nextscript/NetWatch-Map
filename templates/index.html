@@ -437,6 +437,12 @@
     opacity: .8;
     margin-top: 6px;
   }
+  .ci-bandwidth {
+    font-size: 10px;
+    color: var(--cyan);
+    opacity: .82;
+    margin-top: 4px;
+  }
 
   .detail-empty {
     font-size: 11px;
@@ -931,6 +937,7 @@ let tracePointsData = [];
 let traceTimers    = [];
 let traceLoadingConnectionId = null;
 let traceHistory    = [];
+const destinationPositionCache = {};
 let myLat = 0, myLon = 0;
 let totalSeen = 0;
 let globe;
@@ -960,6 +967,40 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function formatBytesPerSec(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes.toFixed(0)} B/s`;
+  const units = ['KB/s', 'MB/s', 'GB/s'];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex++;
+  }
+  return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${units[unitIndex]}`;
+}
+
+function formatBandwidth(conn) {
+  return `RX ${formatBytesPerSec(conn.rx_bytes_per_sec)} | TX ${formatBytesPerSec(conn.tx_bytes_per_sec)}`;
+}
+
+function connectionGeometryChanged(prev, next) {
+  const fields = [
+    'direction',
+    'src_lat',
+    'src_lon',
+    'dst_lat',
+    'dst_lon',
+    'dst_city',
+    'dst_country',
+    'dst_country_code',
+    'display_ip',
+    'remote_ip',
+    'remote_port',
+  ];
+  return fields.some(field => String(prev?.[field] ?? '') !== String(next?.[field] ?? ''));
+}
+
 function loadVisibilityFilters() {
   const defaults = { outgoing: true, incoming: true, trace: true, device: true };
   try {
@@ -981,7 +1022,40 @@ function isConnectionVisible(conn) {
 }
 
 function getVisibleArcs() {
-  const visibleLiveArcs = arcsData.filter(arc => isConnectionVisible(arc));
+  const visibleArcGroups = new Map();
+  arcsData.filter(arc => isConnectionVisible(arc)).forEach(arc => {
+    const key = getDestinationKey(arc);
+    if (!visibleArcGroups.has(key)) visibleArcGroups.set(key, []);
+    visibleArcGroups.get(key).push(arc);
+  });
+  const visibleLiveArcs = [...visibleArcGroups.values()].flatMap(group => {
+    const first = group[0];
+    const destinationKey = getDestinationKey(first);
+    const position = getGroupPosition(group, destinationKey);
+    const directions = new Set(group.map(item => item.direction));
+    const isOut = first.direction === 'outgoing';
+    const color = directions.size > 1 ? COLORS.trace : (isOut ? COLORS.out : COLORS.in);
+    const baseArc = {
+      ...first,
+      id: `group-${destinationKey}`,
+      arcKind: 'base',
+      connectionIds: group.map(item => item.id),
+      startLat: first.src_lat,
+      startLng: first.src_lon,
+      endLat: position.lat,
+      endLng: position.lng,
+      color,
+    };
+    const flowArc = {
+      ...baseArc,
+      id: `flow-${destinationKey}`,
+      arcKind: 'flow',
+      color: isOut
+        ? ['rgba(190,245,255,0.98)', 'rgba(0,212,255,0.08)']
+        : ['rgba(255,190,220,0.98)', 'rgba(255,58,58,0.08)'],
+    };
+    return [baseArc, flowArc];
+  });
   return visibilityFilters.trace
     ? [...visibleLiveArcs, ...traceArcsData]
     : visibleLiveArcs;
@@ -1134,22 +1208,29 @@ function getDestinationKey(conn) {
   return `${countryKey}|${cityKey}`;
 }
 
-function getGroupPosition(group) {
+function getGroupPosition(group, key = '') {
+  if (key && destinationPositionCache[key]) {
+    return destinationPositionCache[key];
+  }
+
   const valid = group.filter(conn =>
     Number.isFinite(Number(conn.dst_lat)) && Number.isFinite(Number(conn.dst_lon))
   );
   if (!valid.length) {
     return { lat: group[0].dst_lat, lng: group[0].dst_lon };
   }
-  return {
-    lat: valid.reduce((sum, conn) => sum + Number(conn.dst_lat), 0) / valid.length,
-    lng: valid.reduce((sum, conn) => sum + Number(conn.dst_lon), 0) / valid.length,
+  const position = {
+    lat: Number(valid[0].dst_lat),
+    lng: Number(valid[0].dst_lon),
   };
+  if (key) destinationPositionCache[key] = position;
+  return position;
 }
 
 function buildConnectionPoint(conn, group = [conn]) {
   const groupIds = group.map(item => item.id);
-  const position = getGroupPosition(group);
+  const destinationKey = getDestinationKey(conn);
+  const position = getGroupPosition(group, destinationKey);
   const pointStyle = getPointStyle(conn);
   const isSelected = groupIds.some(id => selectedConnectionGroupIds.includes(id));
   const directions = new Set(group.map(item => item.direction));
@@ -1169,7 +1250,7 @@ function buildConnectionPoint(conn, group = [conn]) {
     altitude: pointStyle.altitude,
     connectionId: conn.id,
     connectionIds: groupIds,
-    destinationKey: getDestinationKey(conn),
+    destinationKey,
     _label: `<div style="font-family:monospace;font-size:12px;
       background:rgba(2,12,28,.9);border:1px solid rgba(0,212,255,.3);
       padding:8px 12px;border-radius:6px">
@@ -1310,10 +1391,11 @@ function initGlobe() {
     // Arcs
     .arcsData([])
     .arcColor('color')
-    .arcDashLength(0.45)
-    .arcDashGap(0.25)
-    .arcDashAnimateTime(1400)
-    .arcStroke(d => d.direction === 'trace' ? 0.24 : 0.45)
+    .arcDashLength(d => d.arcKind === 'flow' ? 0.08 : 1)
+    .arcDashGap(d => d.arcKind === 'flow' ? 0.9 : 0)
+    .arcDashAnimateTime(d => d.arcKind === 'flow' ? 1800 : 0)
+    .arcsTransitionDuration(0)
+    .arcStroke(d => d.arcKind === 'flow' ? 0.72 : (d.direction === 'trace' ? 0.24 : 0.45))
     .arcAltitudeAutoScale(d => d.direction === 'trace' ? 0.08 : 0.4)
     .arcLabel(d =>
       `<div style="font-family:monospace;font-size:12px;background:rgba(2,12,28,.92);
@@ -1511,6 +1593,7 @@ function renderListItem(item, conn) {
     <div class="ci-location">📍 ${conn.dst_city}, ${conn.dst_country} ${flag}</div>
     <div class="ci-isp">${conn.dst_isp || ''}</div>
     <div class="ci-isp">${escapeHtml(localPortInfo)}</div>
+    <div class="ci-bandwidth">${escapeHtml(formatBandwidth(conn))}</div>
     <div class="ci-app">APP: ${escapeHtml(conn.process_name || 'Unknown')}</div>
   `;
 }
@@ -1599,6 +1682,10 @@ function renderConnectionDetail(conn) {
       <div class="detail-value">${escapeHtml(directionLabel)}</div>
       <div class="detail-label">Status</div>
       <div class="detail-value">${escapeHtml(conn.status || 'UNKNOWN')}</div>
+      <div class="detail-label">RX</div>
+      <div class="detail-value">${escapeHtml(formatBytesPerSec(conn.rx_bytes_per_sec))}</div>
+      <div class="detail-label">TX</div>
+      <div class="detail-value">${escapeHtml(formatBytesPerSec(conn.tx_bytes_per_sec))}</div>
       <div class="detail-label">Local IP</div>
       <div class="detail-value">${escapeHtml(conn.local_ip)}</div>
       <div class="detail-label">Local Port${conn.local_port_count > 1 ? 's' : ''}</div>
@@ -2111,10 +2198,14 @@ socket.on('new_connection', (conn) => {
 
 socket.on('update_connection', (conn) => {
   if (!connections[conn.id]) return;
+  const previous = connections[conn.id];
+  const geometryChanged = connectionGeometryChanged(previous, conn);
   connections[conn.id] = conn;
 
-  updateArc(conn);
-  rebuildConnectionPoints();
+  if (geometryChanged) {
+    updateArc(conn);
+    rebuildConnectionPoints();
+  }
   updateListItem(conn);
 
   if (selectedConnectionId === conn.id) {

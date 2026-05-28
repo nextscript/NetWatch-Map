@@ -30,6 +30,7 @@ last_geo_request: float = 0.0
 
 active_connections: dict = {}   # conn_key → conn_data
 active_conn_lock = threading.Lock()
+process_io_snapshots: dict = {}
 
 selected_adapter: str = 'all'
 my_location: dict = {}
@@ -429,6 +430,33 @@ def get_process_details(pid: Optional[int]) -> dict:
         }
 
 
+def get_process_io_rate(pid: Optional[int], now: float) -> dict:
+    """Approximate per-process network activity using process I/O byte deltas."""
+    empty = {'rx_bytes_per_sec': 0.0, 'tx_bytes_per_sec': 0.0}
+    if pid is None:
+        return empty
+
+    try:
+        counters = psutil.Process(pid).io_counters()
+        read_bytes = int(getattr(counters, 'read_bytes', 0) or 0)
+        write_bytes = int(getattr(counters, 'write_bytes', 0) or 0)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        process_io_snapshots.pop(pid, None)
+        return empty
+
+    previous = process_io_snapshots.get(pid)
+    process_io_snapshots[pid] = (read_bytes, write_bytes, now)
+    if not previous:
+        return empty
+
+    prev_read, prev_write, prev_time = previous
+    elapsed = max(0.001, now - prev_time)
+    return {
+        'rx_bytes_per_sec': max(0.0, (read_bytes - prev_read) / elapsed),
+        'tx_bytes_per_sec': max(0.0, (write_bytes - prev_write) / elapsed),
+    }
+
+
 def aggregate_connection_key(conn, local_ip: str, remote_ip: str, remote_port: int,
                              direction: str) -> str:
     """Group equivalent connections into a single UI entry."""
@@ -500,6 +528,15 @@ def monitor_connections():
                         entry['status'] = conn.status
 
             current_keys = set(grouped.keys())
+            loop_now = time.time()
+            active_pids = {entry['conn'].pid for entry in grouped.values() if entry['conn'].pid is not None}
+            bandwidth_by_pid = {
+                pid: get_process_io_rate(pid, loop_now)
+                for pid in active_pids
+            }
+            for pid in list(process_io_snapshots.keys()):
+                if pid not in active_pids:
+                    process_io_snapshots.pop(pid, None)
 
             for key, grouped_entry in grouped.items():
                 conn = grouped_entry['conn']
@@ -512,6 +549,10 @@ def monitor_connections():
                 primary_local_port = local_ports[0] if local_ports else 0
                 status_str = grouped_entry['status']
                 proc_info = get_process_details(conn.pid)
+                io_rate = bandwidth_by_pid.get(conn.pid, {
+                    'rx_bytes_per_sec': 0.0,
+                    'tx_bytes_per_sec': 0.0,
+                })
 
                 with active_conn_lock:
                     existing = active_connections.get(key)
@@ -527,6 +568,8 @@ def monitor_connections():
                             'process_name': proc_info['process_name'],
                             'process_path': proc_info['process_path'],
                             'port_name': port_name(remote_port),
+                            'rx_bytes_per_sec': io_rate['rx_bytes_per_sec'],
+                            'tx_bytes_per_sec': io_rate['tx_bytes_per_sec'],
                         })
                         if updated != existing:
                             active_connections[key] = updated
@@ -539,7 +582,7 @@ def monitor_connections():
                     # Mark as pending to avoid duplicate lookups
                     active_connections[key] = {'id': key, '_pending': True}
 
-                def _process(k, rip, lip, lp, lps, rp, direc, stat, proc):
+                def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate):
                     geo = get_private_peer_geo(rip) if is_private_ip(rip) else get_geo(rip)
                     if not geo:
                         with active_conn_lock:
@@ -560,6 +603,8 @@ def monitor_connections():
                         'pid': proc['pid'],
                         'process_name': proc['process_name'],
                         'process_path': proc['process_path'],
+                        'rx_bytes_per_sec': rate['rx_bytes_per_sec'],
+                        'tx_bytes_per_sec': rate['tx_bytes_per_sec'],
                         'src_lat': my_location.get('lat', 0),
                         'src_lon': my_location.get('lon', 0),
                         'src_city': my_location.get('city', ''),
@@ -577,7 +622,7 @@ def monitor_connections():
 
                 executor.submit(_process, key, remote_ip, local_ip,
                                 primary_local_port, local_ports, remote_port,
-                                direction, status_str, proc_info)
+                                direction, status_str, proc_info, io_rate)
 
             # Remove closed connections
             with active_conn_lock:
