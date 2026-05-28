@@ -31,6 +31,7 @@ last_geo_request: float = 0.0
 active_connections: dict = {}   # conn_key → conn_data
 active_conn_lock = threading.Lock()
 process_io_snapshots: dict = {}
+network_io_snapshot: Optional[tuple] = None
 
 selected_adapter: str = 'all'
 my_location: dict = {}
@@ -457,6 +458,65 @@ def get_process_io_rate(pid: Optional[int], now: float) -> dict:
     }
 
 
+def get_network_io_rate(now: float) -> dict:
+    """Return selected-interface throughput for Linux fallback attribution."""
+    global network_io_snapshot
+
+    try:
+        if selected_adapter and selected_adapter != 'all':
+            pernic = psutil.net_io_counters(pernic=True)
+            counters = pernic.get(selected_adapter)
+            if not counters:
+                return {'rx_bytes_per_sec': 0.0, 'tx_bytes_per_sec': 0.0}
+            recv = int(counters.bytes_recv or 0)
+            sent = int(counters.bytes_sent or 0)
+            key = selected_adapter
+        else:
+            pernic = psutil.net_io_counters(pernic=True)
+            stats = psutil.net_if_stats()
+            recv = 0
+            sent = 0
+            for name, counters in pernic.items():
+                stat = stats.get(name)
+                if stat and not stat.isup:
+                    continue
+                recv += int(counters.bytes_recv or 0)
+                sent += int(counters.bytes_sent or 0)
+            key = 'all'
+    except Exception:
+        return {'rx_bytes_per_sec': 0.0, 'tx_bytes_per_sec': 0.0}
+
+    previous = network_io_snapshot
+    network_io_snapshot = (key, recv, sent, now)
+    if not previous or previous[0] != key:
+        return {'rx_bytes_per_sec': 0.0, 'tx_bytes_per_sec': 0.0}
+
+    _, prev_recv, prev_sent, prev_time = previous
+    elapsed = max(0.001, now - prev_time)
+    return {
+        'rx_bytes_per_sec': max(0.0, (recv - prev_recv) / elapsed),
+        'tx_bytes_per_sec': max(0.0, (sent - prev_sent) / elapsed),
+    }
+
+
+def distribute_network_rate(rate: dict, grouped: dict) -> dict:
+    """Spread interface throughput over active entries when per-PID data is unavailable."""
+    active_items = [
+        (key, entry)
+        for key, entry in grouped.items()
+        if entry.get('conn') and entry['conn'].pid is not None
+    ]
+    if not active_items:
+        return {}
+
+    share_rx = rate.get('rx_bytes_per_sec', 0.0) / len(active_items)
+    share_tx = rate.get('tx_bytes_per_sec', 0.0) / len(active_items)
+    return {
+        key: {'rx_bytes_per_sec': share_rx, 'tx_bytes_per_sec': share_tx}
+        for key, _ in active_items
+    }
+
+
 def aggregate_connection_key(conn, local_ip: str, remote_ip: str, remote_port: int,
                              direction: str) -> str:
     """Group equivalent connections into a single UI entry."""
@@ -534,6 +594,17 @@ def monitor_connections():
                 pid: get_process_io_rate(pid, loop_now)
                 for pid in active_pids
             }
+            bandwidth_by_key = {}
+            if platform.system().lower() == 'linux':
+                has_pid_bandwidth = any(
+                    (rate.get('rx_bytes_per_sec', 0.0) + rate.get('tx_bytes_per_sec', 0.0)) > 0
+                    for rate in bandwidth_by_pid.values()
+                )
+                if not has_pid_bandwidth:
+                    bandwidth_by_key = distribute_network_rate(
+                        get_network_io_rate(loop_now),
+                        grouped,
+                    )
             for pid in list(process_io_snapshots.keys()):
                 if pid not in active_pids:
                     process_io_snapshots.pop(pid, None)
@@ -549,7 +620,7 @@ def monitor_connections():
                 primary_local_port = local_ports[0] if local_ports else 0
                 status_str = grouped_entry['status']
                 proc_info = get_process_details(conn.pid)
-                io_rate = bandwidth_by_pid.get(conn.pid, {
+                io_rate = bandwidth_by_key.get(key) or bandwidth_by_pid.get(conn.pid, {
                     'rx_bytes_per_sec': 0.0,
                     'tx_bytes_per_sec': 0.0,
                 })
