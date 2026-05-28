@@ -1,6 +1,6 @@
   <h2>Requirements</h2>
   <ul>
-    <li>Windows with access to active network connection information</li>
+    <li>Windows or Linux with access to active network connection information</li>
     <li>Python 3.10 or newer</li>
     <li>Internet access for installing Python packages and resolving IP geolocation data</li>
     <li>Required Python packages from <code>requirements.txt</code>:
