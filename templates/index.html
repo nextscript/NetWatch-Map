@@ -1397,7 +1397,7 @@ function rebuildConnectionPoints() {
   syncPersistentReconnectRings(destinationPoints);
 
   if (selectedConnectionId && !connections[selectedConnectionId]) {
-    clearSelection();
+    clearSelection({ clearTrace: false });
   }
 }
 
@@ -1513,7 +1513,7 @@ function initGlobe() {
     .arcDashAnimateTime(d => d.arcKind === 'flow' ? 1800 : 0)
     .arcsTransitionDuration(0)
     .arcStroke(d => d.arcKind === 'flow' ? 0.72 : (d.direction === 'trace' ? 0.24 : 0.45))
-    .arcAltitudeAutoScale(d => d.direction === 'trace' ? 0.08 : 0.4)
+    .arcAltitudeAutoScale(0.4)
     .arcLabel(d =>
       `<div style="font-family:monospace;font-size:12px;background:rgba(2,12,28,.92);
        border:1px solid rgba(0,212,255,.3);padding:8px 12px;border-radius:6px;line-height:1.8">
@@ -1657,7 +1657,9 @@ function addRing(lat, lng, color, maxR = 2.5, speed = 2.5, period = 900, extra =
   transientRingsData.push(ring);
   ringsData = [...persistentRingsData, ...transientRingsData];
   renderGlobeRings();
-  // Auto-remove after a few seconds
+  if (ring.isTrace) return;
+
+  // Auto-remove short-lived focus rings after a few seconds.
   setTimeout(() => {
     transientRingsData = transientRingsData.filter(item => item !== ring);
     ringsData = [...persistentRingsData, ...transientRingsData];
@@ -1765,10 +1767,10 @@ function scrollGroupIntoView(ids) {
   }
 }
 
-function clearSelection() {
+function clearSelection({ clearTrace = true } = {}) {
   setSelectedConnection(null);
   renderConnectionDetail(null);
-  clearTraceroute();
+  if (clearTrace) clearTraceroute();
   rebuildConnectionPoints();
 }
 
@@ -2354,7 +2356,7 @@ socket.on('connection_closed', (data) => {
   delete connections[data.id];
   selectedConnectionGroupIds = selectedConnectionGroupIds.filter(id => id !== data.id);
   if (selectedConnectionId === data.id || !selectedConnectionGroupIds.length) {
-    clearSelection();
+    clearSelection({ clearTrace: false });
   }
   removeArc(data.id);
   removeFromList(data.id);
