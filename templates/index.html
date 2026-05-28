@@ -468,7 +468,6 @@
     opacity: .82;
     margin-top: 4px;
   }
-
   .detail-empty {
     font-size: 11px;
     line-height: 1.7;
@@ -1056,6 +1055,7 @@ function getConnectionSearchText(conn) {
     conn.process_path,
     conn.display_ip,
     conn.remote_ip,
+    conn.remote_hostname,
     conn.local_ip,
     conn.local_port,
     ...(conn.local_ports || []),
@@ -1309,6 +1309,7 @@ function buildConnectionPoint(conn, group = [conn]) {
   const groupCount = group.length;
   const groupedPorts = [...new Set(group.map(item => item.port_name).filter(Boolean))].slice(0, 3);
   const groupedIps = [...new Set(group.map(item => item.display_ip || item.remote_ip).filter(Boolean))];
+  const groupedHostnames = [...new Set(group.map(item => item.remote_hostname).filter(Boolean))].slice(0, 3);
   const countryLabel = conn.dst_country || conn.dst_country_code || 'Unknown country';
   const cityLabel = conn.dst_city || 'Unknown city';
   return {
@@ -1327,6 +1328,7 @@ function buildConnectionPoint(conn, group = [conn]) {
       ${escapeHtml(cityLabel)}, ${escapeHtml(countryLabel)}
       </b><br>
       ${groupedIps.length} server IP${groupedIps.length === 1 ? '' : 's'}<br>
+      ${groupedHostnames.length ? `<span style="opacity:.7">${escapeHtml(groupedHostnames.join(', '))}</span><br>` : ''}
       <span style="color:#ffcc00">${escapeHtml(groupedPorts.join(', ') || conn.port_name)}</span><br>
       ${groupCount > 1 ? `<span style="color:#ff4dff">${groupCount} CONNECTIONS</span>` : ''}
     </div>`,
@@ -1475,6 +1477,7 @@ function initGlobe() {
         ${d.local_ip}:${d.local_port} → ${(d.display_ip || d.remote_ip)}:${d.remote_port}<br>
         <span style="color:#ffcc00">${d.port_name}</span><br>
         📍 ${d.dst_city}, ${d.dst_country}<br>
+        ${d.remote_hostname ? `<span style="opacity:.85">${escapeHtml(d.remote_hostname)}</span><br>` : ''}
         <span style="opacity:.6">${d.dst_isp}</span>
       </div>`
     )
@@ -1660,6 +1663,7 @@ function renderListItem(item, conn) {
     </div>
     <div class="ci-ip">${conn.display_ip || conn.remote_ip}</div>
     <div class="ci-location">📍 ${conn.dst_city}, ${conn.dst_country} ${flag}</div>
+    ${conn.remote_hostname ? `<div class="ci-isp">${escapeHtml(conn.remote_hostname)}</div>` : ''}
     <div class="ci-isp">${conn.dst_isp || ''}</div>
     <div class="ci-isp">${escapeHtml(localPortInfo)}</div>
     <div class="ci-bandwidth">${escapeHtml(formatBandwidth(conn))}</div>
@@ -1761,6 +1765,8 @@ function renderConnectionDetail(conn) {
       <div class="detail-value">${escapeHtml(localPortsText)}</div>
       <div class="detail-label">Remote</div>
       <div class="detail-value">${escapeHtml(`${conn.remote_ip}:${conn.remote_port}`)}</div>
+      <div class="detail-label">Hostname</div>
+      <div class="detail-value">${escapeHtml(conn.remote_hostname || 'Not available')}</div>
     </div>
     <div class="trace-actions">
       <button id="trace-btn" class="trace-btn" type="button" onclick="runTracerouteForSelected()">
@@ -1883,6 +1889,7 @@ function groupTraceHopsByCityCountry(hops) {
         ...hop,
         hops: [],
         ips: [],
+        hostnames: [],
         isps: [],
         firstHop: hop.hop,
         lastHop: hop.hop,
@@ -1894,6 +1901,7 @@ function groupTraceHopsByCityCountry(hops) {
     group.firstHop = Math.min(group.firstHop, hop.hop);
     group.lastHop = Math.max(group.lastHop, hop.hop);
     if (hop.ip && !group.ips.includes(hop.ip)) group.ips.push(hop.ip);
+    if (hop.hostname && !group.hostnames.includes(hop.hostname)) group.hostnames.push(hop.hostname);
     if (hop.isp && !group.isps.includes(hop.isp)) group.isps.push(hop.isp);
 
     if (!Number.isFinite(Number(group.lat)) && Number.isFinite(Number(hop.lat))) group.lat = hop.lat;
@@ -1912,6 +1920,7 @@ function renderTraceHopList(hops) {
       <div>
         <div class="trace-hop-main">${escapeHtml(formatHopLocation(group))}</div>
         <div class="trace-hop-meta">${escapeHtml(group.ips.join(', '))}</div>
+        ${group.hostnames.length ? `<div class="trace-hop-meta">${escapeHtml(group.hostnames.join(', '))}</div>` : ''}
         ${group.isps.length ? `<div class="trace-hop-meta">${escapeHtml(group.isps.join(', '))}</div>` : ''}
       </div>
     </div>
@@ -1929,6 +1938,7 @@ function buildTracePointLabel(hop) {
     <b style="color:#ff4dff">HOPS ${escapeHtml(formatHopRange(hop.hops || [hop]))}</b><br>
     ${escapeHtml(formatHopLocation(hop))}<br>
     ${hop.ips?.length ? `<span style="opacity:.7">${escapeHtml(hop.ips.join(', '))}</span><br>` : ''}
+    ${hop.hostnames?.length ? `<span style="opacity:.75">${escapeHtml(hop.hostnames.join(', '))}</span><br>` : ''}
     ${hop.estimated ? '<span style="opacity:.75;color:#ff4dff">estimated map position</span><br>' : ''}
     ${hop.localOffset ? '<span style="opacity:.75;color:#ff4dff">offset from this device marker</span><br>' : ''}
     <span style="opacity:.6">${escapeHtml((hop.isps || [hop.isp]).filter(Boolean).join(', '))}</span>

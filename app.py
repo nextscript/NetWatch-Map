@@ -27,6 +27,8 @@ geo_cache: dict = {}
 geo_cache_lock = threading.Lock()
 geo_rate_lock = threading.Lock()
 last_geo_request: float = 0.0
+reverse_dns_cache: dict = {}
+reverse_dns_cache_lock = threading.Lock()
 
 active_connections: dict = {}   # conn_key → conn_data
 active_conn_lock = threading.Lock()
@@ -37,6 +39,7 @@ selected_adapter: str = 'all'
 my_location: dict = {}
 
 executor = ThreadPoolExecutor(max_workers=6)
+dns_executor = ThreadPoolExecutor(max_workers=12)
 
 # ── Port-Namen ──────────────────────────────────────────────────
 PORT_NAMES = {
@@ -225,6 +228,26 @@ def get_geo(ip: str) -> Optional[dict]:
     return None
 
 
+def resolve_reverse_dns(ip: str) -> str:
+    """Resolve PTR hostname for an IP with caching."""
+    if not ip:
+        return ''
+
+    with reverse_dns_cache_lock:
+        if ip in reverse_dns_cache:
+            return reverse_dns_cache[ip]
+
+    hostname = ''
+    try:
+        hostname = socket.gethostbyaddr(ip)[0].rstrip('.')
+    except Exception:
+        hostname = ''
+
+    with reverse_dns_cache_lock:
+        reverse_dns_cache[ip] = hostname
+    return hostname
+
+
 def parse_traceroute_output(output: str) -> list:
     """Extract hop numbers and IPs from Windows tracert or Unix traceroute output."""
     hops = []
@@ -306,15 +329,22 @@ def run_traceroute(target_ip: str) -> dict:
     for hop in hops:
         ip = hop.get('ip')
         geo = None
+        hostname = ''
         private = False
         if ip:
             private = is_private_ip(ip)
+            dns_future = dns_executor.submit(resolve_reverse_dns, ip)
             geo = get_private_peer_geo(ip) if private else get_geo(ip)
+            try:
+                hostname = dns_future.result(timeout=0.5)
+            except Exception:
+                hostname = ''
             if geo:
                 last_geo_ip = ip
         enriched.append({
             'hop': hop['hop'],
             'ip': ip,
+            'hostname': hostname,
             'status': hop.get('status', 'ok'),
             'is_private': private,
             'lat': geo.get('lat') if geo else None,
@@ -654,7 +684,12 @@ def monitor_connections():
                     active_connections[key] = {'id': key, '_pending': True}
 
                 def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate):
+                    dns_future = dns_executor.submit(resolve_reverse_dns, rip)
                     geo = get_private_peer_geo(rip) if is_private_ip(rip) else get_geo(rip)
+                    try:
+                        hostname = dns_future.result(timeout=0.5)
+                    except Exception:
+                        hostname = ''
                     if not geo:
                         with active_conn_lock:
                             active_connections.pop(k, None)
@@ -663,6 +698,7 @@ def monitor_connections():
                         'id': k,
                         'local_ip': lip,
                         'remote_ip': rip,
+                        'remote_hostname': hostname,
                         'display_ip': get_display_ip(lip, rip, direc),
                         'local_port': lp,
                         'local_ports': lps,
