@@ -1,7 +1,7 @@
   <h2>Requirements</h2>
   <ul>
     <li>Windows with access to active network connection information</li>
-    <li>Python 3.9 or newer</li>
+    <li>Python 3.10 or newer</li>
     <li>Internet access for installing Python packages and resolving IP geolocation data</li>
     <li>Required Python packages from <code>requirements.txt</code>:
       flask, flask-socketio, psutil, requests, simple-websocket
@@ -10,7 +10,7 @@
 
   <h2>How to run</h2>
   <ol>
-    <li>Install Python 3.9 or newer and make sure <code>python</code> or <code>py -3</code> is available.</li>
+    <li>Install Python 3.10 or newer and make sure <code>python</code> or <code>py -3</code> is available.</li>
     <li>Run <code>start.bat</code> from the project folder.</li>
     <li>The launcher installs the required dependencies automatically.</li>
     <li>Open <code>http://localhost:5000</code> in your browser.</li>
