@@ -494,6 +494,21 @@
   .detail-value {
     color: #fff;
     word-break: break-word;
+    border-radius: 3px;
+    cursor: copy;
+    padding: 1px 3px;
+    margin: -1px -3px;
+    transition: background .15s, color .15s, box-shadow .15s;
+  }
+  .detail-value:hover,
+  .detail-value:focus-visible {
+    background: rgba(0,212,255,0.12);
+    box-shadow: 0 0 0 1px rgba(0,212,255,0.2);
+    outline: none;
+  }
+  .detail-value.copied {
+    color: var(--green);
+    background: rgba(0,255,136,0.1);
   }
 
   .trace-actions {
@@ -996,6 +1011,56 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function detailRow(label, value) {
+  const text = String(value ?? '');
+  const escaped = escapeHtml(text);
+  return `
+      <div class="detail-label">${escapeHtml(label)}</div>
+      <div class="detail-value" role="button" tabindex="0" title="Click to copy" data-copy="${escaped}" onclick="copyDetailValue(this)" onkeydown="copyDetailValueFromKey(event, this)">${escaped}</div>`;
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-1000px';
+  textarea.style.left = '-1000px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  textarea.remove();
+}
+
+async function copyDetailValue(el) {
+  const text = el?.dataset?.copy ?? '';
+  if (!text) return;
+
+  try {
+    await copyTextToClipboard(text);
+    el.classList.add('copied');
+    el.title = 'Copied';
+    clearTimeout(el._copyTimer);
+    el._copyTimer = setTimeout(() => {
+      el.classList.remove('copied');
+      el.title = 'Click to copy';
+    }, 850);
+  } catch (error) {
+    el.title = 'Copy failed';
+  }
+}
+
+function copyDetailValueFromKey(event, el) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  copyDetailValue(el);
 }
 
 function formatBytesPerSec(value) {
@@ -1796,28 +1861,17 @@ function renderConnectionDetail(conn) {
   detail.innerHTML = `
     <div class="detail-title">CONNECTION DETAILS</div>
     <div class="detail-grid">
-      <div class="detail-label">Application</div>
-      <div class="detail-value">${escapeHtml(conn.process_name || 'Unknown')}</div>
-      <div class="detail-label">PID</div>
-      <div class="detail-value">${escapeHtml(pidText)}</div>
-      <div class="detail-label">Path</div>
-      <div class="detail-value">${escapeHtml(processPath)}</div>
-      <div class="detail-label">Direction</div>
-      <div class="detail-value">${escapeHtml(directionLabel)}</div>
-      <div class="detail-label">Status</div>
-      <div class="detail-value">${escapeHtml(conn.status || 'UNKNOWN')}</div>
-      <div class="detail-label">RX</div>
-      <div class="detail-value">${escapeHtml(formatBytesPerSec(conn.rx_bytes_per_sec))}</div>
-      <div class="detail-label">TX</div>
-      <div class="detail-value">${escapeHtml(formatBytesPerSec(conn.tx_bytes_per_sec))}</div>
-      <div class="detail-label">Local IP</div>
-      <div class="detail-value">${escapeHtml(conn.local_ip)}</div>
-      <div class="detail-label">Local Port${conn.local_port_count > 1 ? 's' : ''}</div>
-      <div class="detail-value">${escapeHtml(localPortsText)}</div>
-      <div class="detail-label">Remote</div>
-      <div class="detail-value">${escapeHtml(`${conn.remote_ip}:${conn.remote_port}`)}</div>
-      <div class="detail-label">Hostname</div>
-      <div class="detail-value">${escapeHtml(conn.remote_hostname || 'Not available')}</div>
+      ${detailRow('Application', conn.process_name || 'Unknown')}
+      ${detailRow('PID', pidText)}
+      ${detailRow('Path', processPath)}
+      ${detailRow('Direction', directionLabel)}
+      ${detailRow('Status', conn.status || 'UNKNOWN')}
+      ${detailRow('RX', formatBytesPerSec(conn.rx_bytes_per_sec))}
+      ${detailRow('TX', formatBytesPerSec(conn.tx_bytes_per_sec))}
+      ${detailRow('Local IP', conn.local_ip)}
+      ${detailRow(`Local Port${conn.local_port_count > 1 ? 's' : ''}`, localPortsText)}
+      ${detailRow('Remote', `${conn.remote_ip}:${conn.remote_port}`)}
+      ${detailRow('Hostname', conn.remote_hostname || 'Not available')}
     </div>
     <div class="trace-actions">
       <button id="trace-btn" class="trace-btn" type="button" onclick="runTracerouteForSelected()">
