@@ -281,23 +281,47 @@ def get_fallback_peer_geo(ip: str, hostname: str = '') -> dict:
     }
 
 
-def get_geo(ip: str) -> Optional[dict]:
-    """Geolocate an IP with caching and rate limiting (45 req/min)."""
-    if is_private_ip(ip):
+def parse_ipinfo_geo(data: dict, ip: str) -> Optional[dict]:
+    """Convert ipinfo.io response data into the app's geo shape."""
+    loc = (data.get('loc') or '').strip()
+    if not loc or ',' not in loc:
         return None
 
-    with geo_cache_lock:
-        if ip in geo_cache:
-            return geo_cache[ip]
+    try:
+        lat_text, lon_text = loc.split(',', 1)
+        lat = float(lat_text.strip())
+        lon = float(lon_text.strip())
+    except (TypeError, ValueError):
+        return None
 
-    # Rate limit: max 45 requests / minute -> min. 1.35 s spacing
-    with geo_rate_lock:
-        global last_geo_request
-        elapsed = time.time() - last_geo_request
-        if elapsed < 1.35:
-            time.sleep(1.35 - elapsed)
-        last_geo_request = time.time()
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
 
+    country_code = (data.get('country') or '').lower()
+    return {
+        'lat': lat,
+        'lon': lon,
+        'city': data.get('city', '') or data.get('region', ''),
+        'country': (data.get('country') or '').upper(),
+        'countryCode': country_code,
+        'isp': data.get('org', ''),
+        'ip': data.get('ip') or ip,
+        'geo_provider': 'ipinfo.io',
+    }
+
+
+def get_ipinfo_geo(ip: str) -> Optional[dict]:
+    try:
+        r = requests.get(f'https://ipinfo.io/{ip}/json', timeout=6)
+        if r.status_code != 200:
+            return None
+        return parse_ipinfo_geo(r.json(), ip)
+    except Exception as e:
+        print(f'[GEO] ipinfo.io error for {ip}: {e}')
+    return None
+
+
+def get_ip_api_geo(ip: str) -> Optional[dict]:
     try:
         r = requests.get(
             f'http://ip-api.com/json/{ip}',
@@ -306,7 +330,7 @@ def get_geo(ip: str) -> Optional[dict]:
         )
         data = r.json()
         if data.get('status') == 'success':
-            result = {
+            return {
                 'lat': data['lat'],
                 'lon': data['lon'],
                 'city': data.get('city', ''),
@@ -314,13 +338,35 @@ def get_geo(ip: str) -> Optional[dict]:
                 'countryCode': data.get('countryCode', '').lower(),
                 'isp': data.get('isp') or data.get('org', ''),
                 'ip': ip,
+                'geo_provider': 'ip-api.com',
             }
-            with geo_cache_lock:
-                geo_cache[ip] = result
-            return result
     except Exception as e:
-        print(f'[GEO] Error for {ip}: {e}')
+        print(f'[GEO] ip-api.com error for {ip}: {e}')
     return None
+
+
+def get_geo(ip: str) -> Optional[dict]:
+    """Geolocate an IP with caching, preferring ipinfo.io coordinates."""
+    if is_private_ip(ip):
+        return None
+
+    with geo_cache_lock:
+        if ip in geo_cache:
+            return geo_cache[ip]
+
+    # Keep external provider usage conservative.
+    with geo_rate_lock:
+        global last_geo_request
+        elapsed = time.time() - last_geo_request
+        if elapsed < 1.35:
+            time.sleep(1.35 - elapsed)
+        last_geo_request = time.time()
+
+    result = get_ipinfo_geo(ip) or get_ip_api_geo(ip)
+    if result:
+        with geo_cache_lock:
+            geo_cache[ip] = result
+    return result
 
 
 def resolve_reverse_dns(ip: str) -> str:
@@ -351,7 +397,7 @@ def refresh_windows_dns_name_cache(force: bool = False) -> None:
         return
 
     now = time.time()
-    if not force and now - windows_dns_cache_checked_at < 10:
+    if not force and now - windows_dns_cache_checked_at < 2:
         return
     windows_dns_cache_checked_at = now
 
@@ -368,6 +414,7 @@ def refresh_windows_dns_name_cache(force: bool = False) -> None:
         return
 
     ip_to_names = {}
+    aliases_by_name = {}
     current_name = ''
     for raw_line in completed.stdout.splitlines():
         line = raw_line.strip()
@@ -388,14 +435,25 @@ def refresh_windows_dns_name_cache(force: bool = False) -> None:
         if not current_name:
             continue
 
+        if value and normalized_label in ('cnameentry', 'cnameeintrag'):
+            target = value.lower()
+            aliases = aliases_by_name.setdefault(target, [])
+            for alias in [current_name, *aliases_by_name.get(current_name, [])]:
+                if alias and alias not in aliases:
+                    aliases.append(alias)
+            continue
+
+        current_aliases = [current_name, *aliases_by_name.get(current_name, [])]
+
         for candidate in re.findall(r'(?<![\da-fA-F:.])(?:\d{1,3}\.){3}\d{1,3}(?![\da-fA-F:.])', value):
             try:
                 ipaddress.ip_address(candidate)
             except ValueError:
                 continue
             ip_to_names.setdefault(candidate, [])
-            if current_name not in ip_to_names[candidate]:
-                ip_to_names[candidate].append(current_name)
+            for name in current_aliases:
+                if name not in ip_to_names[candidate]:
+                    ip_to_names[candidate].append(name)
 
         for candidate in re.findall(r'(?<![\da-fA-F:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?![\da-fA-F:])', value):
             try:
@@ -403,8 +461,9 @@ def refresh_windows_dns_name_cache(force: bool = False) -> None:
             except ValueError:
                 continue
             ip_to_names.setdefault(normalized, [])
-            if current_name not in ip_to_names[normalized]:
-                ip_to_names[normalized].append(current_name)
+            for name in current_aliases:
+                if name not in ip_to_names[normalized]:
+                    ip_to_names[normalized].append(name)
 
     with windows_dns_cache_lock:
         windows_dns_name_cache.clear()
@@ -419,7 +478,7 @@ def refresh_linux_dns_name_cache(force: bool = False) -> None:
         return
 
     now = time.time()
-    if not force and now - linux_dns_cache_checked_at < 10:
+    if not force and now - linux_dns_cache_checked_at < 2:
         return
     linux_dns_cache_checked_at = now
 
@@ -660,6 +719,23 @@ def run_traceroute(target_ip: str) -> dict:
 def get_my_location() -> dict:
     """Determine this machine's public IP and location."""
     try:
+        r = requests.get('https://ipinfo.io/json', timeout=6)
+        if r.status_code == 200:
+            result = parse_ipinfo_geo(r.json(), '')
+            if result:
+                return {
+                    'lat': result['lat'],
+                    'lon': result['lon'],
+                    'city': result.get('city') or 'Unknown',
+                    'country': result.get('country') or 'Unknown',
+                    'countryCode': result.get('countryCode', ''),
+                    'ip': result.get('ip', ''),
+                    'geo_provider': result.get('geo_provider', 'ipinfo.io'),
+                }
+    except Exception as e:
+        print(f'[GEO] Failed to resolve local location from ipinfo.io: {e}')
+
+    try:
         r = requests.get(
             'http://ip-api.com/json/',
             params={'fields': 'status,lat,lon,city,country,countryCode,isp,query'},
@@ -674,6 +750,7 @@ def get_my_location() -> dict:
                 'country': data.get('country', 'Unknown'),
                 'countryCode': data.get('countryCode', '').lower(),
                 'ip': data.get('query', ''),
+                'geo_provider': 'ip-api.com',
             }
     except Exception as e:
         print(f'[GEO] Failed to resolve local location: {e}')
@@ -997,27 +1074,8 @@ def monitor_connections():
                     # Mark as pending to avoid duplicate lookups
                     active_connections[key] = {'id': key, '_pending': True}
 
-                def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate, cached_hostnames=None):
-                    cached_hostnames = cached_hostnames if cached_hostnames is not None else resolve_cached_dns_names(rip)
-                    dns_future = dns_executor.submit(resolve_reverse_dns, rip)
-                    hostname_hint = cached_hostnames[0] if cached_hostnames else ''
-                    is_priority = any(is_priority_dns_name(name) for name in cached_hostnames)
-                    if is_private_ip(rip):
-                        geo = get_private_peer_geo(rip)
-                    elif is_priority:
-                        geo = get_fallback_peer_geo(rip, hostname_hint)
-                    else:
-                        geo = get_geo(rip)
-                    try:
-                        reverse_hostname = dns_future.result(timeout=0.5)
-                    except Exception:
-                        reverse_hostname = ''
-                    hostname = hostname_hint or reverse_hostname
-                    all_hostnames = list(cached_hostnames)
-                    if reverse_hostname and reverse_hostname not in all_hostnames:
-                        all_hostnames.append(reverse_hostname)
-                    if not geo:
-                        geo = get_fallback_peer_geo(rip, hostname)
+                def _emit_connection_data(k, rip, lip, lp, lps, rp, direc, stat, proc, rate,
+                                          geo, hostname, hostnames):
                     destination_key = aggregate_destination_key(geo)
                     with active_conn_lock:
                         destination_seen_counts[destination_key] = destination_seen_counts.get(destination_key, 0) + 1
@@ -1027,7 +1085,7 @@ def monitor_connections():
                         'local_ip': lip,
                         'remote_ip': rip,
                         'remote_hostname': hostname,
-                        'remote_hostnames': all_hostnames,
+                        'remote_hostnames': hostnames,
                         'display_ip': get_display_ip(lip, rip, direc),
                         'local_port': lp,
                         'local_ports': lps,
@@ -1058,10 +1116,63 @@ def monitor_connections():
                         active_connections[k] = data
                     socketio.emit('new_connection', data)
 
+                def _refresh_connection_geo(k, rip):
+                    geo = get_geo(rip)
+                    if not geo:
+                        return
+                    with active_conn_lock:
+                        existing = active_connections.get(k)
+                        if not existing or existing.get('_pending'):
+                            return
+                        updated = dict(existing)
+                        updated.update({
+                            'dst_lat': geo['lat'],
+                            'dst_lon': geo['lon'],
+                            'dst_city': geo['city'],
+                            'dst_country': geo['country'],
+                            'dst_country_code': geo['countryCode'],
+                            'dst_isp': geo['isp'],
+                        })
+                        if updated == existing:
+                            return
+                        active_connections[k] = updated
+                    socketio.emit('update_connection', updated)
+
+                def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate,
+                             cached_hostnames=None, fast_emit=False):
+                    cached_hostnames = cached_hostnames if cached_hostnames is not None else resolve_cached_dns_names(rip)
+                    dns_future = dns_executor.submit(resolve_reverse_dns, rip)
+                    hostname_hint = cached_hostnames[0] if cached_hostnames else ''
+                    try:
+                        reverse_hostname = dns_future.result(timeout=0.2 if fast_emit else 0.5)
+                    except Exception:
+                        reverse_hostname = ''
+                    hostname = hostname_hint or reverse_hostname
+                    all_hostnames = list(cached_hostnames)
+                    if reverse_hostname and reverse_hostname not in all_hostnames:
+                        all_hostnames.append(reverse_hostname)
+
+                    if is_private_ip(rip):
+                        geo = get_private_peer_geo(rip)
+                    elif fast_emit:
+                        geo = get_geo(rip)
+                        if not geo:
+                            geo = get_fallback_peer_geo(rip, hostname)
+                    else:
+                        geo = get_geo(rip)
+                        if not geo:
+                            geo = get_fallback_peer_geo(rip, hostname)
+
+                    _emit_connection_data(k, rip, lip, lp, lps, rp, direc, stat, proc, rate,
+                                          geo, hostname, all_hostnames)
+
+                    if fast_emit and not is_private_ip(rip) and geo.get('fallback'):
+                        executor.submit(_refresh_connection_geo, k, rip)
+
                 if has_priority_dns:
                     _process(key, remote_ip, local_ip, primary_local_port, local_ports,
                              remote_port, direction, status_str, proc_info, io_rate,
-                             candidate_hostnames)
+                             candidate_hostnames, True)
                 else:
                     executor.submit(_process, key, remote_ip, local_ip,
                                     primary_local_port, local_ports, remote_port,

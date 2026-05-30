@@ -1023,6 +1023,7 @@ let traceTimers    = [];
 let traceLoadingConnectionId = null;
 let traceHistory    = [];
 const destinationPositionCache = {};
+const connectionPositionCache = {};
 let myLat = 0, myLon = 0;
 let totalSeen = 0;
 let globe;
@@ -1185,6 +1186,9 @@ function connectionGeometryChanged(prev, next) {
     'display_ip',
     'remote_ip',
     'remote_port',
+    'remote_hostname',
+    'remote_hostnames',
+    'dst_isp',
   ];
   return fields.some(field => String(prev?.[field] ?? '') !== String(next?.[field] ?? ''));
 }
@@ -1425,6 +1429,46 @@ function hashString(value) {
   return hash >>> 0;
 }
 
+function normalizeLongitude(value) {
+  return ((Number(value) + 540) % 360) - 180;
+}
+
+function getConnectionPosition(conn) {
+  const key = conn?.id || `${conn?.remote_ip || ''}:${conn?.remote_port || ''}:${conn?.pid || ''}`;
+  if (key && connectionPositionCache[key]) {
+    return connectionPositionCache[key];
+  }
+
+  const lat = Number(conn?.dst_lat);
+  const lng = Number(conn?.dst_lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { lat: conn?.dst_lat, lng: conn?.dst_lon };
+  }
+
+  const coordinateKey = `${lat.toFixed(4)}|${lng.toFixed(4)}`;
+  const sameCoordinateIndex = Object.values(connections)
+    .filter(item =>
+      item && !item._pending &&
+      Number(item.dst_lat).toFixed(4) === lat.toFixed(4) &&
+      Number(item.dst_lon).toFixed(4) === lng.toFixed(4)
+    )
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .findIndex(item => item.id === conn.id);
+
+  const index = Math.max(0, sameCoordinateIndex);
+  const angle = ((hashString(`${coordinateKey}|${key}`) % 360) * Math.PI) / 180;
+  const ring = Math.floor(index / 10);
+  const distance = index === 0 ? 0 : 0.18 + (ring * 0.08);
+  const lonScale = Math.max(0.35, Math.cos(lat * Math.PI / 180));
+  const position = {
+    lat: Math.max(-89, Math.min(89, lat + Math.sin(angle) * distance)),
+    lng: normalizeLongitude(lng + (Math.cos(angle) * distance) / lonScale),
+  };
+
+  if (key) connectionPositionCache[key] = position;
+  return position;
+}
+
 function getPointStyle(conn) {
   const isSelected = selectedConnectionId && conn?.id === selectedConnectionId;
   return {
@@ -1444,11 +1488,17 @@ function getLocalDevicePointLabel() {
 
 function updateLocalDevicePoint() {
   let changed = false;
+  let localSeen = false;
   pointsData = pointsData.map(point => {
     if (!point.isLocal) return point;
+    if (localSeen) {
+      changed = true;
+      return null;
+    }
+    localSeen = true;
     changed = true;
-    return { ...point, _label: getLocalDevicePointLabel() };
-  });
+    return { ...point, pointKey: 'local-device', _label: getLocalDevicePointLabel() };
+  }).filter(Boolean);
   if (changed) renderGlobePoints();
 }
 
@@ -1488,10 +1538,12 @@ function getGroupPosition(group, key = '') {
   if (!valid.length) {
     return { lat: group[0].dst_lat, lng: group[0].dst_lon };
   }
-  const position = {
-    lat: Number(valid[0].dst_lat),
-    lng: Number(valid[0].dst_lon),
-  };
+  const position = group.length === 1
+    ? getConnectionPosition(valid[0])
+    : {
+        lat: Number(valid[0].dst_lat),
+        lng: Number(valid[0].dst_lon),
+      };
   if (key) destinationPositionCache[key] = position;
   return position;
 }
@@ -1558,7 +1610,7 @@ function syncPersistentReconnectRings(destinationPoints) {
 }
 
 function rebuildConnectionPoints() {
-  const localPoints = pointsData.filter(point => point.isLocal);
+  const localPoints = pointsData.filter(point => point.isLocal).slice(0, 1);
   const destinationMap = new Map();
 
   Object.values(connections).forEach(conn => {
@@ -1812,6 +1864,9 @@ function removeArc(id) {
 
 function addPoint(lat, lng, color, radius, label, extra = {}) {
   const point = { lat, lng, color, radius, _label: label, ...extra };
+  if (point.pointKey) {
+    pointsData = pointsData.filter(existing => existing.pointKey !== point.pointKey);
+  }
   if (point.connectionId) {
     pointsData = pointsData.filter(existing => existing.connectionId !== point.connectionId);
   }
@@ -2569,7 +2624,7 @@ socket.on('my_location', (data) => {
   // Local location as a green point
   addPoint(myLat, myLon, COLORS.local, 0.28,
     getLocalDevicePointLabel(),
-    { isLocal: true, altitude: 0 }
+    { isLocal: true, altitude: 0, pointKey: 'local-device' }
   );
 
   // Rotate globe toward the local location
@@ -2603,7 +2658,8 @@ socket.on('new_connection', (conn) => {
 
   addArc(conn);
   rebuildConnectionPoints();
-  addRing(conn.dst_lat, conn.dst_lon,
+  const ringPosition = getConnectionPosition(conn);
+  addRing(ringPosition.lat, ringPosition.lng,
     conn.direction === 'outgoing' ? '#00d4ff' : '#ff3a3a');
 
   addToList(conn);
@@ -2617,6 +2673,8 @@ socket.on('update_connection', (conn) => {
   connections[conn.id] = conn;
 
   if (geometryChanged) {
+    delete connectionPositionCache[conn.id];
+    delete destinationPositionCache[getDestinationKey(conn)];
     updateArc(conn);
     rebuildConnectionPoints();
   }
@@ -2635,6 +2693,8 @@ socket.on('update_connection', (conn) => {
 
 socket.on('connection_closed', (data) => {
   if (!connections[data.id]) return;
+  delete connectionPositionCache[data.id];
+  delete destinationPositionCache[getDestinationKey(connections[data.id])];
   delete connections[data.id];
   selectedConnectionGroupIds = selectedConnectionGroupIds.filter(id => id !== data.id);
   if (selectedConnectionId === data.id || !selectedConnectionGroupIds.length) {
@@ -2651,7 +2711,7 @@ function setAdapter(adapter) {
   socket.emit('set_adapter', { adapter });
   // Clear connection list and arcs
   arcsData   = [];
-  pointsData = pointsData.filter(p => p.color === COLORS.local); // Keep local point
+  pointsData = pointsData.filter(p => p.isLocal).slice(0, 1); // Keep one local point
   persistentRingsData = [];
   transientRingsData = transientRingsData.filter(ring => ring.isTrace);
   clearTraceroute();
