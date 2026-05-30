@@ -993,6 +993,7 @@ let totalSeen = 0;
 let globe;
 let selectedConnectionId = null;
 let selectedConnectionGroupIds = [];
+let activeDetailKind = null;
 let rotationEnabled = true;
 let localDeviceIp = '';
 let mobileSideOpen = false;
@@ -1854,6 +1855,15 @@ function clearSelection({ clearTrace = true } = {}) {
   rebuildConnectionPoints();
 }
 
+function clearDetailOverlay({ force = false } = {}) {
+  if (activeDetailKind === 'trace' && !force) return;
+  const detail = document.getElementById('conn-detail');
+  if (!detail) return;
+  detail.innerHTML = '';
+  detail.style.display = 'none';
+  activeDetailKind = null;
+}
+
 function formatTraceCoords(hop) {
   const lat = Number(hop?.lat);
   const lon = Number(hop?.lon);
@@ -1877,6 +1887,7 @@ function renderTraceHopDetail(hop) {
   const detail = document.getElementById('conn-detail');
   if (!detail || !hop) return;
 
+  activeDetailKind = 'trace';
   detail.style.display = 'block';
   detail.innerHTML = `
     <div class="detail-title trace-detail">HOP CONNECTION DETAILS</div>
@@ -1900,6 +1911,7 @@ function renderTraceSegmentDetail(segment) {
 
   const from = segment.fromHop;
   const to = segment.toHop;
+  activeDetailKind = 'trace';
   detail.style.display = 'block';
   detail.innerHTML = `
     <div class="detail-title trace-detail">HOP CONNECTION DETAILS</div>
@@ -1923,11 +1935,11 @@ function renderConnectionDetail(conn) {
   if (!detail) return;
 
   if (!conn) {
-    detail.innerHTML = '';
-    detail.style.display = 'none';
+    clearDetailOverlay();
     return;
   }
 
+  activeDetailKind = 'connection';
   detail.style.display = 'block';
 
   const directionLabel = conn.direction === 'outgoing' ? 'Outgoing' : 'Incoming';
@@ -2498,7 +2510,7 @@ socket.on('update_connection', (conn) => {
   if (selectedConnectionId === conn.id) {
     if (selectedConnectionGroupIds.length > 1) {
       setSelectedConnectionGroup(selectedConnectionGroupIds);
-    } else {
+    } else if (activeDetailKind !== 'trace') {
       renderConnectionDetail(conn);
       setSelectedConnection(conn);
     }
@@ -2538,6 +2550,7 @@ function setAdapter(adapter) {
     removeFromList(k);
   });
   clearSelection();
+  clearDetailOverlay({ force: true });
   recalcStats();
 }
 
