@@ -45,6 +45,19 @@ my_location: dict = {}
 executor = ThreadPoolExecutor(max_workers=6)
 dns_executor = ThreadPoolExecutor(max_workers=12)
 
+DNS_NAME_PRIORITY_TOKENS = (
+    'googlevideo.com', 'youtube.com', 'ytimg.com',
+    'ttvnw.net', 'twitch.tv', 'twitchcdn.net',
+    'netflix.com', 'nflxvideo.net', 'nflximg.net',
+    'tiktokcdn.com', 'tiktokv.com', 'byteoversea.com',
+    'fbcdn.net', 'facebook.com', 'instagram.com',
+    'discordapp.net', 'discord.com',
+    'spotify.com', 'scdn.co',
+    'steamcontent.com', 'akamaihd.net', 'akamaized.net',
+    'cloudfront.net', 'fastly.net', 'cdn', 'hls', 'dash',
+    'video', 'stream', 'media',
+)
+
 # ── Port-Namen ──────────────────────────────────────────────────
 PORT_NAMES = {
     20: 'FTP-Data', 21: 'FTP', 22: 'SSH', 23: 'Telnet',
@@ -288,8 +301,9 @@ def refresh_windows_dns_name_cache(force: bool = False) -> None:
 
         label, value = line.split(':', 1)
         label = label.strip().lower()
+        normalized_label = re.sub(r'[^a-z0-9äöüß]', '', label)
         value = value.strip().rstrip('.')
-        if value and ('name' in label or 'eintragsname' in label):
+        if value and normalized_label in ('recordname', 'eintragsname'):
             current_name = value.lower()
             continue
 
@@ -319,8 +333,17 @@ def refresh_windows_dns_name_cache(force: bool = False) -> None:
         windows_dns_name_cache.update(ip_to_names)
 
 
-def resolve_cached_dns_name(ip: str) -> str:
-    """Return a recent forward-DNS name for an IP, preferring visible CDN names."""
+def rank_dns_name(name: str) -> tuple:
+    """Rank user-facing/video/CDN names ahead of generic resolver names."""
+    lowered = name.lower()
+    for index, token in enumerate(DNS_NAME_PRIORITY_TOKENS):
+        if token in lowered:
+            return (0, index, len(lowered), lowered)
+    return (1, len(lowered), lowered)
+
+
+def resolve_cached_dns_names(ip: str) -> list:
+    """Return recent forward-DNS names for an IP from the OS resolver cache."""
     refresh_windows_dns_name_cache()
     try:
         normalized_ip = str(ipaddress.ip_address(ip))
@@ -332,15 +355,20 @@ def resolve_cached_dns_name(ip: str) -> str:
         if normalized_ip != ip:
             names.extend(windows_dns_name_cache.get(normalized_ip, []))
 
-    if not names:
-        return ''
+    unique_names = []
+    seen = set()
+    for name in sorted(names, key=rank_dns_name):
+        if name in seen:
+            continue
+        seen.add(name)
+        unique_names.append(name)
+    return unique_names
 
-    preferred_tokens = ('ttvnw.net', 'twitch.tv', 'twitchcdn.net')
-    for token in preferred_tokens:
-        for name in names:
-            if token in name:
-                return name
-    return names[0]
+
+def resolve_cached_dns_name(ip: str) -> str:
+    """Return the best recent forward-DNS name for an IP."""
+    names = resolve_cached_dns_names(ip)
+    return names[0] if names else ''
 
 
 def resolve_connection_hostname(ip: str) -> str:
@@ -686,7 +714,7 @@ def monitor_connections():
             adapter_ips: set = set()
             if selected_adapter and selected_adapter != 'all':
                 for addr in psutil.net_if_addrs().get(selected_adapter, []):
-                    if addr.family == socket.AF_INET:
+                    if addr.family in (socket.AF_INET, socket.AF_INET6):
                         adapter_ips.add(addr.address)
 
             grouped: dict = {}
@@ -768,7 +796,8 @@ def monitor_connections():
                 with active_conn_lock:
                     existing = active_connections.get(key)
                     if existing and not existing.get('_pending'):
-                        cached_hostname = resolve_cached_dns_name(remote_ip)
+                        cached_hostnames = resolve_cached_dns_names(remote_ip)
+                        cached_hostname = cached_hostnames[0] if cached_hostnames else ''
                         updated = dict(existing)
                         updated.update({
                             'local_port': primary_local_port,
@@ -776,6 +805,7 @@ def monitor_connections():
                             'local_port_count': len(local_ports),
                             'display_ip': display_ip,
                             'remote_hostname': cached_hostname or existing.get('remote_hostname', ''),
+                            'remote_hostnames': cached_hostnames or existing.get('remote_hostnames', []),
                             'status': status_str,
                             'pid': proc_info['pid'],
                             'process_name': proc_info['process_name'],
@@ -796,12 +826,17 @@ def monitor_connections():
                     active_connections[key] = {'id': key, '_pending': True}
 
                 def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate):
-                    dns_future = dns_executor.submit(resolve_connection_hostname, rip)
+                    cached_hostnames = resolve_cached_dns_names(rip)
+                    dns_future = dns_executor.submit(resolve_reverse_dns, rip)
                     geo = get_private_peer_geo(rip) if is_private_ip(rip) else get_geo(rip)
                     try:
-                        hostname = dns_future.result(timeout=0.5)
+                        reverse_hostname = dns_future.result(timeout=0.5)
                     except Exception:
-                        hostname = ''
+                        reverse_hostname = ''
+                    hostname = cached_hostnames[0] if cached_hostnames else reverse_hostname
+                    all_hostnames = list(cached_hostnames)
+                    if reverse_hostname and reverse_hostname not in all_hostnames:
+                        all_hostnames.append(reverse_hostname)
                     if not geo:
                         with active_conn_lock:
                             active_connections.pop(k, None)
@@ -815,6 +850,7 @@ def monitor_connections():
                         'local_ip': lip,
                         'remote_ip': rip,
                         'remote_hostname': hostname,
+                        'remote_hostnames': all_hostnames,
                         'display_ip': get_display_ip(lip, rip, direc),
                         'local_port': lp,
                         'local_ports': lps,

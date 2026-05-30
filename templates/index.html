@@ -1087,6 +1087,13 @@ function formatBandwidth(conn) {
   return `RX ${formatBytesPerSec(conn.rx_bytes_per_sec)} | TX ${formatBytesPerSec(conn.tx_bytes_per_sec)}`;
 }
 
+function getConnectionHostnames(conn) {
+  return [...new Set([
+    conn?.remote_hostname,
+    ...(conn?.remote_hostnames || []),
+  ].filter(Boolean))];
+}
+
 function connectionGeometryChanged(prev, next) {
   const fields = [
     'direction',
@@ -1131,6 +1138,7 @@ function getConnectionSearchText(conn) {
     conn.display_ip,
     conn.remote_ip,
     conn.remote_hostname,
+    ...(conn.remote_hostnames || []),
     conn.local_ip,
     conn.local_port,
     ...(conn.local_ports || []),
@@ -1404,7 +1412,7 @@ function buildConnectionPoint(conn, group = [conn]) {
   const groupCount = group.length;
   const groupedPorts = [...new Set(group.map(item => item.port_name).filter(Boolean))].slice(0, 3);
   const groupedIps = [...new Set(group.map(item => item.display_ip || item.remote_ip).filter(Boolean))];
-  const groupedHostnames = [...new Set(group.map(item => item.remote_hostname).filter(Boolean))].slice(0, 3);
+  const groupedHostnames = [...new Set(group.flatMap(item => getConnectionHostnames(item)))].slice(0, 3);
   const seenCount = Math.max(0, ...group.map(item => Number(item.destination_seen_count) || 0));
   const reconnectCount = Math.max(0, seenCount - 1);
   const countryLabel = conn.dst_country || conn.dst_country_code || 'Unknown country';
@@ -1597,7 +1605,7 @@ function initGlobe() {
         ${d.local_ip}:${d.local_port} → ${(d.display_ip || d.remote_ip)}:${d.remote_port}<br>
         <span style="color:#ffcc00">${d.port_name}</span><br>
         📍 ${d.dst_city}, ${d.dst_country}<br>
-        ${d.remote_hostname ? `<span style="opacity:.85">${escapeHtml(d.remote_hostname)}</span><br>` : ''}
+        ${getConnectionHostnames(d).length ? `<span style="opacity:.85">${escapeHtml(getConnectionHostnames(d).slice(0, 2).join(', '))}</span><br>` : ''}
         <span style="opacity:.6">${d.dst_isp}</span>
       </div>`
     )
@@ -1776,6 +1784,7 @@ function addToList(conn) {
 
 function renderListItem(item, conn) {
   const isOut = conn.direction === 'outgoing';
+  const hostnames = getConnectionHostnames(conn);
 
   const flag = conn.dst_country_code
     ? `<img src="https://flagcdn.com/16x12/${conn.dst_country_code}.png"
@@ -1795,7 +1804,7 @@ function renderListItem(item, conn) {
     </div>
     <div class="ci-ip">${conn.display_ip || conn.remote_ip}</div>
     <div class="ci-location">📍 ${conn.dst_city}, ${conn.dst_country} ${flag}</div>
-    ${conn.remote_hostname ? `<div class="ci-isp">${escapeHtml(conn.remote_hostname)}</div>` : ''}
+    ${hostnames.length ? `<div class="ci-isp">${escapeHtml(hostnames.slice(0, 2).join(', '))}</div>` : ''}
     <div class="ci-isp">${conn.dst_isp || ''}</div>
     <div class="ci-isp">${escapeHtml(localPortInfo)}</div>
     <div class="ci-bandwidth">${escapeHtml(formatBandwidth(conn))}</div>
@@ -1945,6 +1954,7 @@ function renderConnectionDetail(conn) {
   const directionLabel = conn.direction === 'outgoing' ? 'Outgoing' : 'Incoming';
   const pidText = conn.pid ?? 'Unknown';
   const processPath = conn.process_path || 'Not available';
+  const hostnames = getConnectionHostnames(conn);
   const localPortsText = conn.local_port_count > 1
     ? conn.local_ports.join(', ')
     : String(conn.local_port);
@@ -1962,7 +1972,8 @@ function renderConnectionDetail(conn) {
       ${detailRow('Local IP', conn.local_ip)}
       ${detailRow(`Local Port${conn.local_port_count > 1 ? 's' : ''}`, localPortsText)}
       ${detailRow('Remote', `${conn.remote_ip}:${conn.remote_port}`)}
-      ${detailRow('Hostname', conn.remote_hostname || 'Not available')}
+      ${detailRow('Hostname', hostnames[0] || 'Not available')}
+      ${hostnames.length > 1 ? detailRow('DNS Names', hostnames.join(', ')) : ''}
     </div>
     <div class="trace-actions">
       <button id="trace-btn" class="trace-btn" type="button" onclick="runTracerouteForSelected()">
