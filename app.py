@@ -230,13 +230,16 @@ def get_fallback_peer_geo(ip: str, hostname: str = '') -> dict:
     lat = max(-75.0, min(75.0, base_lat + math.sin(angle) * distance))
     lon_scale = max(0.3, math.cos(base_lat * math.pi / 180.0))
     lon = ((base_lon + (math.cos(angle) * distance) / lon_scale + 540) % 360) - 180
-    label = hostname.split('.')[-2:] if hostname and '.' in hostname else []
-    provider = '.'.join(label) if label else 'Unresolved Internet'
+    if hostname and hostname.endswith(' (inferred)'):
+        provider = hostname
+    else:
+        label = hostname.split('.')[-2:] if hostname and '.' in hostname else []
+        provider = '.'.join(label) if label else 'Unresolved Internet'
 
     return {
         'lat': lat,
         'lon': lon,
-        'city': 'Unknown',
+        'city': provider,
         'country': 'Internet',
         'countryCode': '',
         'isp': provider,
@@ -893,7 +896,7 @@ def monitor_connections():
                             socketio.emit('update_connection', updated)
                         continue
 
-                    if existing:
+                    if existing and not has_priority_dns:
                         continue
 
                     # Mark as pending to avoid duplicate lookups

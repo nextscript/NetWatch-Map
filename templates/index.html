@@ -1375,6 +1375,10 @@ function getDestinationKey(conn) {
   const countryCode = String(conn.dst_country_code || '').toLowerCase();
   const countryName = String(conn.dst_country || '').toLowerCase();
   const cityName = String(conn.dst_city || '').toLowerCase();
+  if (countryName === 'internet' || (countryName === 'unknown' && !countryCode)) {
+    const hostKey = getConnectionHostnames(conn)[0] || conn.dst_isp || conn.remote_ip || conn.display_ip || 'unknown-internet';
+    return `internet|${String(hostKey).toLowerCase()}`;
+  }
   const countryKey = countryCode || countryName || 'unknown-country';
   const cityKey = cityName || 'unknown-city';
   return `${countryKey}|${cityKey}`;
