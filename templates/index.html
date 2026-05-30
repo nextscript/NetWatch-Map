@@ -510,6 +510,12 @@
     color: var(--green);
     background: rgba(0,255,136,0.1);
   }
+  .detail-title.trace-detail {
+    color: #ff4dff;
+  }
+  .detail-grid.trace-grid .detail-label {
+    color: #ff4dff;
+  }
 
   .trace-actions {
     display: flex;
@@ -1580,7 +1586,9 @@ function initGlobe() {
     .arcStroke(d => d.arcKind === 'flow' ? 0.72 : (d.direction === 'trace' ? 0.24 : 0.45))
     .arcAltitudeAutoScale(0.4)
     .arcLabel(d =>
-      `<div style="font-family:monospace;font-size:12px;background:rgba(2,12,28,.92);
+      d.direction === 'trace'
+        ? buildTraceArcLabel(d)
+        : `<div style="font-family:monospace;font-size:12px;background:rgba(2,12,28,.92);
        border:1px solid rgba(0,212,255,.3);padding:8px 12px;border-radius:6px;line-height:1.8">
         <b style="color:${d.direction==='outgoing'?'#00d4ff':'#ff3a3a'}">
           ${d.direction === 'outgoing' ? '↑ OUTGOING' : '↓ INCOMING'}
@@ -1592,6 +1600,11 @@ function initGlobe() {
         <span style="opacity:.6">${d.dst_isp}</span>
       </div>`
     )
+    .onArcClick(arc => {
+      if (arc?.direction === 'trace') {
+        renderTraceSegmentDetail(arc);
+      }
+    })
     // Points
     .pointsData([])
     .pointColor('color')
@@ -1599,7 +1612,9 @@ function initGlobe() {
     .pointRadius('radius')
     .pointLabel(d => d._label || '')
     .onPointClick(point => {
-      if (Array.isArray(point?.connectionIds) && point.connectionIds.length) {
+      if (point?.isTraceHop) {
+        renderTraceHopDetail(point);
+      } else if (Array.isArray(point?.connectionIds) && point.connectionIds.length) {
         selectConnectionGroup(point.connectionIds);
       } else if (point?.connectionId && connections[point.connectionId]) {
         selectConnectionGroup([point.connectionId]);
@@ -1839,6 +1854,70 @@ function clearSelection({ clearTrace = true } = {}) {
   rebuildConnectionPoints();
 }
 
+function formatTraceCoords(hop) {
+  const lat = Number(hop?.lat);
+  const lon = Number(hop?.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return 'Not available';
+  return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+}
+
+function formatTraceIpList(hop) {
+  return (hop?.ips || [hop?.ip]).filter(Boolean).join(', ') || 'Not available';
+}
+
+function formatTraceHostList(hop) {
+  return (hop?.hostnames || [hop?.hostname]).filter(Boolean).join(', ') || 'Not available';
+}
+
+function formatTraceIspList(hop) {
+  return (hop?.isps || [hop?.isp]).filter(Boolean).join(', ') || 'Not available';
+}
+
+function renderTraceHopDetail(hop) {
+  const detail = document.getElementById('conn-detail');
+  if (!detail || !hop) return;
+
+  detail.style.display = 'block';
+  detail.innerHTML = `
+    <div class="detail-title trace-detail">HOP CONNECTION DETAILS</div>
+    <div class="detail-grid trace-grid">
+      ${detailRow('Hop', formatHopRange(hop.hops || [hop]))}
+      ${detailRow('IP', formatTraceIpList(hop))}
+      ${detailRow('Hostname', formatTraceHostList(hop))}
+      ${detailRow('Location', formatHopLocation(hop))}
+      ${detailRow('ISP', formatTraceIspList(hop))}
+      ${detailRow('Coordinates', formatTraceCoords(hop))}
+      ${detailRow('Target', hop.traceTargetIp || 'Not available')}
+      ${detailRow('Status', hop.estimated ? 'Estimated map position' : 'Resolved')}
+      ${hop.command ? detailRow('Command', hop.command) : ''}
+    </div>
+  `;
+}
+
+function renderTraceSegmentDetail(segment) {
+  const detail = document.getElementById('conn-detail');
+  if (!detail || !segment) return;
+
+  const from = segment.fromHop;
+  const to = segment.toHop;
+  detail.style.display = 'block';
+  detail.innerHTML = `
+    <div class="detail-title trace-detail">HOP CONNECTION DETAILS</div>
+    <div class="detail-grid trace-grid">
+      ${detailRow('Segment', `${segment.segmentIndex ?? ''}`.trim() || 'Trace')}
+      ${detailRow('From', from ? `${formatHopRange(from.hops || [from])} ${formatTraceIpList(from)}` : 'This device')}
+      ${detailRow('From Loc', from ? formatHopLocation(from) : 'Local machine')}
+      ${detailRow('To', to ? `${formatHopRange(to.hops || [to])} ${formatTraceIpList(to)}` : 'Not available')}
+      ${detailRow('To Host', to ? formatTraceHostList(to) : 'Not available')}
+      ${detailRow('To Loc', to ? formatHopLocation(to) : 'Not available')}
+      ${detailRow('To ISP', to ? formatTraceIspList(to) : 'Not available')}
+      ${detailRow('Target', segment.traceTargetIp || 'Not available')}
+      ${detailRow('Coordinates', to ? formatTraceCoords(to) : 'Not available')}
+      ${segment.command ? detailRow('Command', segment.command) : ''}
+    </div>
+  `;
+}
+
 function renderConnectionDetail(conn) {
   const detail = document.getElementById('conn-detail');
   if (!detail) return;
@@ -2052,6 +2131,18 @@ function buildTracePointLabel(hop) {
   </div>`;
 }
 
+function buildTraceArcLabel(arc) {
+  const to = arc?.toHop;
+  return `<div style="font-family:monospace;font-size:12px;
+    background:rgba(2,12,28,.94);border:1px solid rgba(255,0,255,.42);
+    padding:8px 12px;border-radius:6px;line-height:1.7">
+    <b style="color:#ff4dff">TRACE SEGMENT ${escapeHtml(arc?.segmentIndex ?? '')}</b><br>
+    ${to ? `${escapeHtml(formatHopRange(to.hops || [to]))} ${escapeHtml(formatHopLocation(to))}<br>` : ''}
+    ${to ? `<span style="opacity:.7">${escapeHtml(formatTraceIpList(to))}</span><br>` : ''}
+    <span style="opacity:.6">Click for connection details</span>
+  </div>`;
+}
+
 function normalizeLngDelta(delta) {
   if (delta > 180) return delta - 360;
   if (delta < -180) return delta + 360;
@@ -2204,6 +2295,10 @@ function animateTraceroute(data) {
         radius: 0.12,
         altitude: 0,
         _label: buildTracePointLabel(hop),
+        isTraceHop: true,
+        traceTargetIp: data.target_ip,
+        command: data.command,
+        ...hop,
       });
       renderGlobePoints();
       addRing(hop.lat, hop.lon, COLORS.tracePoint, 0.9, 2.1, 1200, { isTrace: true });
@@ -2222,6 +2317,12 @@ function animateTraceroute(data) {
         endLng: hop.lon,
         color: COLORS.trace,
         direction: 'trace',
+        isTraceArc: true,
+        segmentIndex: index + 1,
+        fromHop: index === 0 ? null : geoHops[index - 1],
+        toHop: hop,
+        traceTargetIp: data.target_ip,
+        command: data.command,
       });
       renderGlobeArcs();
       focusMapOnTarget(hop.lat, hop.lon, index === geoHops.length - 1 ? 0.9 : 1.15, 850);
