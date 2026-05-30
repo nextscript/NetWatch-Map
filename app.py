@@ -29,6 +29,9 @@ geo_rate_lock = threading.Lock()
 last_geo_request: float = 0.0
 reverse_dns_cache: dict = {}
 reverse_dns_cache_lock = threading.Lock()
+windows_dns_name_cache: dict = {}
+windows_dns_cache_lock = threading.Lock()
+windows_dns_cache_checked_at: float = 0.0
 
 active_connections: dict = {}   # conn_key → conn_data
 active_conn_lock = threading.Lock()
@@ -247,6 +250,102 @@ def resolve_reverse_dns(ip: str) -> str:
     with reverse_dns_cache_lock:
         reverse_dns_cache[ip] = hostname
     return hostname
+
+
+def refresh_windows_dns_name_cache(force: bool = False) -> None:
+    """Map recently resolved Windows DNS names to IPs from ipconfig /displaydns."""
+    global windows_dns_cache_checked_at
+
+    if not platform.system().lower().startswith('win'):
+        return
+
+    now = time.time()
+    if not force and now - windows_dns_cache_checked_at < 10:
+        return
+    windows_dns_cache_checked_at = now
+
+    try:
+        completed = subprocess.run(
+            ['ipconfig', '/displaydns'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            encoding='oem',
+            errors='replace',
+        )
+    except Exception:
+        return
+
+    ip_to_names = {}
+    current_name = ''
+    for raw_line in completed.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if ':' not in line:
+            continue
+
+        label, value = line.split(':', 1)
+        label = label.strip().lower()
+        value = value.strip().rstrip('.')
+        if value and ('name' in label or 'eintragsname' in label):
+            current_name = value.lower()
+            continue
+
+        if not current_name:
+            continue
+
+        for candidate in re.findall(r'(?<![\da-fA-F:.])(?:\d{1,3}\.){3}\d{1,3}(?![\da-fA-F:.])', value):
+            try:
+                ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            ip_to_names.setdefault(candidate, [])
+            if current_name not in ip_to_names[candidate]:
+                ip_to_names[candidate].append(current_name)
+
+        for candidate in re.findall(r'(?<![\da-fA-F:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?![\da-fA-F:])', value):
+            try:
+                normalized = str(ipaddress.ip_address(candidate))
+            except ValueError:
+                continue
+            ip_to_names.setdefault(normalized, [])
+            if current_name not in ip_to_names[normalized]:
+                ip_to_names[normalized].append(current_name)
+
+    with windows_dns_cache_lock:
+        windows_dns_name_cache.clear()
+        windows_dns_name_cache.update(ip_to_names)
+
+
+def resolve_cached_dns_name(ip: str) -> str:
+    """Return a recent forward-DNS name for an IP, preferring visible CDN names."""
+    refresh_windows_dns_name_cache()
+    try:
+        normalized_ip = str(ipaddress.ip_address(ip))
+    except ValueError:
+        normalized_ip = ip
+
+    with windows_dns_cache_lock:
+        names = list(windows_dns_name_cache.get(ip, []))
+        if normalized_ip != ip:
+            names.extend(windows_dns_name_cache.get(normalized_ip, []))
+
+    if not names:
+        return ''
+
+    preferred_tokens = ('ttvnw.net', 'twitch.tv', 'twitchcdn.net')
+    for token in preferred_tokens:
+        for name in names:
+            if token in name:
+                return name
+    return names[0]
+
+
+def resolve_connection_hostname(ip: str) -> str:
+    """Prefer browser-resolved DNS cache names, then fall back to PTR records."""
+    return resolve_cached_dns_name(ip) or resolve_reverse_dns(ip)
 
 
 def parse_traceroute_output(output: str) -> list:
@@ -669,12 +768,14 @@ def monitor_connections():
                 with active_conn_lock:
                     existing = active_connections.get(key)
                     if existing and not existing.get('_pending'):
+                        cached_hostname = resolve_cached_dns_name(remote_ip)
                         updated = dict(existing)
                         updated.update({
                             'local_port': primary_local_port,
                             'local_ports': local_ports,
                             'local_port_count': len(local_ports),
                             'display_ip': display_ip,
+                            'remote_hostname': cached_hostname or existing.get('remote_hostname', ''),
                             'status': status_str,
                             'pid': proc_info['pid'],
                             'process_name': proc_info['process_name'],
@@ -695,7 +796,7 @@ def monitor_connections():
                     active_connections[key] = {'id': key, '_pending': True}
 
                 def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate):
-                    dns_future = dns_executor.submit(resolve_reverse_dns, rip)
+                    dns_future = dns_executor.submit(resolve_connection_hostname, rip)
                     geo = get_private_peer_geo(rip) if is_private_ip(rip) else get_geo(rip)
                     try:
                         hostname = dns_future.result(timeout=0.5)
