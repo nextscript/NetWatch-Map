@@ -510,6 +510,41 @@
     color: var(--green);
     background: rgba(0,255,136,0.1);
   }
+  .detail-value-with-action {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .detail-value-with-action .detail-value {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .ipinfo-btn {
+    flex: 0 0 22px;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(0,212,255,0.28);
+    border-radius: 4px;
+    color: var(--cyan);
+    background: rgba(0,212,255,0.08);
+    text-decoration: none;
+    transition: border .2s, box-shadow .2s, background .2s;
+  }
+  .ipinfo-btn:hover,
+  .ipinfo-btn:focus-visible {
+    border-color: var(--cyan);
+    box-shadow: var(--glow);
+    outline: none;
+  }
+  .ipinfo-btn svg {
+    width: 13px;
+    height: 13px;
+    stroke-width: 2.4;
+  }
   .detail-title.trace-detail {
     color: #ff4dff;
   }
@@ -993,6 +1028,7 @@ let totalSeen = 0;
 let globe;
 let selectedConnectionId = null;
 let selectedConnectionGroupIds = [];
+let activeConnectionListIds = null;
 let activeDetailKind = null;
 let rotationEnabled = true;
 let localDeviceIp = '';
@@ -1026,6 +1062,48 @@ function detailRow(label, value) {
   return `
       <div class="detail-label">${escapeHtml(label)}</div>
       <div class="detail-value" role="button" tabindex="0" title="Click to copy" data-copy="${escaped}" onclick="copyDetailValue(this)" onkeydown="copyDetailValueFromKey(event, this)">${escaped}</div>`;
+}
+
+function remoteDetailRow(conn) {
+  const remoteIp = String(conn?.remote_ip ?? '');
+  const remotePort = String(conn?.remote_port ?? '');
+  const remoteText = remotePort ? `${remoteIp}:${remotePort}` : remoteIp;
+  const escapedRemote = escapeHtml(remoteText);
+
+  return `
+      <div class="detail-label">Remote</div>
+      <div class="detail-value-with-action">
+        <div class="detail-value" role="button" tabindex="0" title="Click to copy" data-copy="${escapedRemote}" onclick="copyDetailValue(this)" onkeydown="copyDetailValueFromKey(event, this)">${escapedRemote}</div>
+        ${ipinfoAction(remoteIp)}
+      </div>`;
+}
+
+function ipinfoAction(ip) {
+  const text = String(ip ?? '');
+  const escapedIp = escapeHtml(text);
+  const ipinfoUrl = `https://ipinfo.io/${encodeURIComponent(text)}`;
+
+  return `
+        <a class="ipinfo-btn" href="${ipinfoUrl}" target="_blank" rel="noopener noreferrer" title="Open IPInfo for ${escapedIp}" aria-label="Open IPInfo for ${escapedIp}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20 20-3.5-3.5"></path>
+          </svg>
+        </a>`;
+}
+
+function ipInfoDetailRow(label, ips) {
+  const ipList = (ips || []).filter(Boolean).map(ip => String(ip));
+  const text = ipList.join(', ') || 'Not available';
+  const escaped = escapeHtml(text);
+  const actions = ipList.map(ipinfoAction).join('');
+
+  return `
+      <div class="detail-label">${escapeHtml(label)}</div>
+      <div class="detail-value-with-action">
+        <div class="detail-value" role="button" tabindex="0" title="Click to copy" data-copy="${escaped}" onclick="copyDetailValue(this)" onkeydown="copyDetailValueFromKey(event, this)">${escaped}</div>
+        ${actions}
+      </div>`;
 }
 
 async function copyTextToClipboard(text) {
@@ -1164,7 +1242,8 @@ function matchesConnectionSearch(conn) {
 }
 
 function isConnectionListVisible(conn) {
-  return isConnectionVisible(conn) && matchesConnectionSearch(conn);
+  const matchesActivePath = !activeConnectionListIds || activeConnectionListIds.has(conn.id);
+  return matchesActivePath && isConnectionVisible(conn) && matchesConnectionSearch(conn);
 }
 
 function setConnectionSearch(value) {
@@ -1270,6 +1349,20 @@ function updateConnectionListVisibility() {
     const item = document.getElementById(safeId(conn.id));
     if (item) item.classList.toggle('filtered-out', !isConnectionListVisible(conn));
   });
+}
+
+function setConnectionListPathFilter(ids) {
+  const validIds = (ids || []).filter(id => connections[id]);
+  activeConnectionListIds = validIds.length ? new Set(validIds) : null;
+  updateConnectionListVisibility();
+  recalcStats();
+}
+
+function clearConnectionListPathFilter() {
+  if (!activeConnectionListIds) return;
+  activeConnectionListIds = null;
+  updateConnectionListVisibility();
+  recalcStats();
 }
 
 function syncFilterUI() {
@@ -1616,6 +1709,12 @@ function initGlobe() {
     .onArcClick(arc => {
       if (arc?.direction === 'trace') {
         renderTraceSegmentDetail(arc);
+      } else if (Array.isArray(arc?.connectionIds) && arc.connectionIds.length) {
+        setConnectionListPathFilter(arc.connectionIds);
+        selectConnectionGroup(arc.connectionIds);
+      } else if (arc?.id && connections[arc.id]) {
+        setConnectionListPathFilter([arc.id]);
+        selectConnectionGroup([arc.id]);
       }
     })
     // Points
@@ -1862,6 +1961,7 @@ function scrollGroupIntoView(ids) {
 }
 
 function clearSelection({ clearTrace = true } = {}) {
+  clearConnectionListPathFilter();
   setSelectedConnection(null);
   renderConnectionDetail(null);
   if (clearTrace) clearTraceroute();
@@ -1906,7 +2006,7 @@ function renderTraceHopDetail(hop) {
     <div class="detail-title trace-detail">HOP CONNECTION DETAILS</div>
     <div class="detail-grid trace-grid">
       ${detailRow('Hop', formatHopRange(hop.hops || [hop]))}
-      ${detailRow('IP', formatTraceIpList(hop))}
+      ${ipInfoDetailRow('IP', hop?.ips || [hop?.ip])}
       ${detailRow('Hostname', formatTraceHostList(hop))}
       ${detailRow('Location', formatHopLocation(hop))}
       ${detailRow('ISP', formatTraceIspList(hop))}
@@ -1975,7 +2075,7 @@ function renderConnectionDetail(conn) {
       ${detailRow('TX', formatBytesPerSec(conn.tx_bytes_per_sec))}
       ${detailRow('Local IP', conn.local_ip)}
       ${detailRow(`Local Port${conn.local_port_count > 1 ? 's' : ''}`, localPortsText)}
-      ${detailRow('Remote', `${conn.remote_ip}:${conn.remote_port}`)}
+      ${remoteDetailRow(conn)}
       ${detailRow('Hostname', hostnames[0] || 'Not available')}
       ${hostnames.length > 1 ? detailRow('DNS Names', hostnames.join(', ')) : ''}
     </div>

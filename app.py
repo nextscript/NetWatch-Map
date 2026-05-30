@@ -32,6 +32,7 @@ reverse_dns_cache_lock = threading.Lock()
 windows_dns_name_cache: dict = {}
 windows_dns_cache_lock = threading.Lock()
 windows_dns_cache_checked_at: float = 0.0
+linux_dns_cache_checked_at: float = 0.0
 
 active_connections: dict = {}   # conn_key → conn_data
 active_conn_lock = threading.Lock()
@@ -47,20 +48,52 @@ dns_executor = ThreadPoolExecutor(max_workers=12)
 
 DNS_NAME_PRIORITY_TOKENS = (
     'googlevideo.com', 'youtube.com', 'ytimg.com',
-    'ttvnw.net', 'twitch.tv', 'twitchcdn.net',
-    'netflix.com', 'nflxvideo.net', 'nflximg.net',
-    'tiktokcdn.com', 'tiktokv.com', 'byteoversea.com',
-    'fbcdn.net', 'facebook.com', 'instagram.com',
-    'discordapp.net', 'discord.com',
+    'youtu.be', 'youtubei.googleapis.com',
+    'ttvnw.net', 'twitch.tv', 'twitchcdn.net', 'jtvnw.net',
+    'netflix.com', 'nflxvideo.net', 'nflximg.net', 'nflxso.net',
+    'nflxext.com', 'nflxsearch.net',
+    'tiktokcdn.com', 'tiktokv.com', 'tiktok.com', 'byteoversea.com',
+    'ibyteimg.com', 'muscdn.com',
+    'fbcdn.net', 'facebook.com', 'instagram.com', 'cdninstagram.com',
+    'video.xx.fbcdn.net',
+    'video.twimg.com', 'twimg.com', 'twitter.com', 'x.com',
+    'redditmedia.com', 'redd.it', 'redditstatic.com',
+    'discordapp.net', 'discord.com', 'discordapp.com', 'discordcdn.com',
     'spotify.com', 'scdn.co',
-    'steamcontent.com', 'akamaihd.net', 'akamaized.net',
-    'cloudfront.net', 'fastly.net', 'cdn', 'hls', 'dash',
-    'video', 'stream', 'media',
+    'steamcontent.com', 'steamstatic.com', 'akamaihd.net', 'akamaized.net',
+    'vimeo.com', 'vimeocdn.com', 'dailymotion.com', 'dmcdn.net',
+    'hulu.com', 'hulustream.com', 'huluim.com',
+    'disneyplus.com', 'disneystreaming.com', 'bamgrid.com',
+    'primevideo.com', 'amazonvideo.com', 'media-amazon.com',
+    'hbomax.com', 'max.com', 'hbomaxcdn.com', 'hbo.com',
+    'peacocktv.com', 'peacock.com', 'nbcuni.com',
+    'paramountplus.com', 'cbsivideo.com', 'pluto.tv', 'plutotv.net',
+    'roku.com', 'rokutime.com', 'tubitv.com', 'tubi.io',
+    'crunchyroll.com', 'funimation.com',
+    'kick.com', 'kick.com.au', 'rumble.com',
+    'brightcove.com', 'brightcove.net', 'jwpcdn.com', 'jwplatform.com',
+    'mux.com', 'muxcdn.com', 'wistia.com', 'wistia.net', 'vidyard.com',
+    'cloudflarestream.com', 'streamable.com', 'vevo.com',
+    'cloudfront.net', 'cloudflare.com', 'cloudflare.net',
+    'fastly.net', 'fastlylb.net', 'map.fastly.net',
+    'edgesuite.net', 'edgekey.net', 'akadns.net', 'akamai.net',
+    'llnwd.net', 'limelight.com', 'cachefly.net',
+    'cdn77.org', 'cdn77.com', 'b-cdn.net', 'bunnycdn.com', 'bunny.net',
+    'stackpathdns.com', 'stackpathcdn.com', 'hwcdn.net',
+    'azureedge.net', 'trafficmanager.net', 'msecnd.net',
+    'voxcdn.com', 'vox-cdn.com', 'wp.com', 'wpenginepowered.com',
+    'jsdelivr.net', 'unpkg.com', 'cdnjs.cloudflare.com',
+    'cdn', 'hls', 'dash', 'm3u8', 'mpd',
+    'video', 'stream', 'media', 'vod', 'live',
 )
 
 BROWSER_PROCESS_NAMES = {
     'chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe',
     'vivaldi.exe', 'browser.exe',
+    'chrome', 'google-chrome', 'google-chrome-stable', 'chromium',
+    'chromium-browser', 'msedge', 'microsoft-edge', 'firefox',
+    'firefox-bin', 'brave', 'brave-browser', 'opera', 'vivaldi',
+    'vivaldi-bin', 'librewolf',
 }
 
 INFERRED_PROVIDER_NETWORKS = [
@@ -378,6 +411,60 @@ def refresh_windows_dns_name_cache(force: bool = False) -> None:
         windows_dns_name_cache.update(ip_to_names)
 
 
+def refresh_linux_dns_name_cache(force: bool = False) -> None:
+    """Map Linux systemd-resolved cache names to IPs when the cache is exposed."""
+    global linux_dns_cache_checked_at
+
+    if platform.system().lower() != 'linux':
+        return
+
+    now = time.time()
+    if not force and now - linux_dns_cache_checked_at < 10:
+        return
+    linux_dns_cache_checked_at = now
+
+    try:
+        completed = subprocess.run(
+            ['resolvectl', 'show-cache'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            encoding='utf-8',
+            errors='replace',
+        )
+    except Exception:
+        return
+
+    if completed.returncode != 0:
+        return
+
+    ip_to_names = {}
+    record_pattern = re.compile(
+        r'(?P<name>[A-Za-z0-9_.-]+)\.?\s+IN\s+(?:A|AAAA)\s+(?P<ip>[0-9A-Fa-f:.]+)'
+    )
+    for line in completed.stdout.splitlines():
+        match = record_pattern.search(line.strip())
+        if not match:
+            continue
+        name = (match.group('name') or '').strip().rstrip('.').lower()
+        candidate = match.group('ip')
+        if not name:
+            continue
+        try:
+            normalized = str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+        ip_to_names.setdefault(normalized, [])
+        if name not in ip_to_names[normalized]:
+            ip_to_names[normalized].append(name)
+
+    if not ip_to_names:
+        return
+
+    with windows_dns_cache_lock:
+        windows_dns_name_cache.update(ip_to_names)
+
+
 def rank_dns_name(name: str) -> tuple:
     """Rank user-facing/video/CDN names ahead of generic resolver names."""
     lowered = name.lower()
@@ -395,6 +482,7 @@ def is_priority_dns_name(name: str) -> bool:
 def resolve_cached_dns_names(ip: str) -> list:
     """Return recent forward-DNS names for an IP from the OS resolver cache."""
     refresh_windows_dns_name_cache()
+    refresh_linux_dns_name_cache()
     try:
         normalized_ip = str(ipaddress.ip_address(ip))
     except ValueError:
@@ -595,13 +683,20 @@ def get_my_location() -> dict:
 
 
 def get_adapters() -> list:
-    """List all network adapters with IPv4 addresses."""
+    """List all network adapters with IPv4/IPv6 addresses."""
     adapters = [{'name': 'all', 'display': '🌐  All Adapters', 'ips': [], 'is_up': True}]
     stats = psutil.net_if_stats()
     addrs = psutil.net_if_addrs()
 
     for name, addr_list in addrs.items():
-        ipv4 = [a.address for a in addr_list if a.family == socket.AF_INET]
+        ipv4 = []
+        for addr in addr_list:
+            if addr.family not in (socket.AF_INET, socket.AF_INET6):
+                continue
+            ip = (addr.address or '').split('%', 1)[0]
+            if not ip or ip.startswith('127.') or ip in ('::1', '0.0.0.0'):
+                continue
+            ipv4.append(ip)
         if ipv4:
             stat = stats.get(name)
             up = stat.isup if stat else False
@@ -784,7 +879,7 @@ def monitor_connections():
             if selected_adapter and selected_adapter != 'all':
                 for addr in psutil.net_if_addrs().get(selected_adapter, []):
                     if addr.family in (socket.AF_INET, socket.AF_INET6):
-                        adapter_ips.add(addr.address)
+                        adapter_ips.add((addr.address or '').split('%', 1)[0])
 
             grouped: dict = {}
 
@@ -792,7 +887,7 @@ def monitor_connections():
                 if not conn.raddr or not conn.raddr.ip:
                     continue
                 remote_ip = conn.raddr.ip
-                local_ip = conn.laddr.ip if conn.laddr else ''
+                local_ip = (conn.laddr.ip if conn.laddr else '').split('%', 1)[0]
                 local_port = conn.laddr.port if conn.laddr else 0
                 remote_port = conn.raddr.port if conn.raddr else 0
 
