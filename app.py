@@ -42,7 +42,7 @@ network_io_snapshot: Optional[tuple] = None
 selected_adapter: str = 'all'
 my_location: dict = {}
 
-executor = ThreadPoolExecutor(max_workers=6)
+executor = ThreadPoolExecutor(max_workers=24)
 dns_executor = ThreadPoolExecutor(max_workers=12)
 
 DNS_NAME_PRIORITY_TOKENS = (
@@ -57,6 +57,23 @@ DNS_NAME_PRIORITY_TOKENS = (
     'cloudfront.net', 'fastly.net', 'cdn', 'hls', 'dash',
     'video', 'stream', 'media',
 )
+
+BROWSER_PROCESS_NAMES = {
+    'chrome.exe', 'msedge.exe', 'firefox.exe', 'brave.exe', 'opera.exe',
+    'vivaldi.exe', 'browser.exe',
+}
+
+INFERRED_PROVIDER_NETWORKS = [
+    ('googlevideo/youtube (inferred)', ipaddress.ip_network(net))
+    for net in (
+        '64.233.160.0/19', '66.102.0.0/20', '66.249.64.0/19',
+        '72.14.192.0/18', '74.125.0.0/16', '108.177.0.0/17',
+        '142.250.0.0/15', '172.217.0.0/16', '173.194.0.0/16',
+        '209.85.128.0/17', '216.58.192.0/19', '216.239.32.0/19',
+        '2404:6800::/32', '2607:f8b0::/32', '2a00:1450::/32',
+        '2c0f:fb50::/32',
+    )
+]
 
 # ── Port-Namen ──────────────────────────────────────────────────
 PORT_NAMES = {
@@ -203,6 +220,31 @@ def get_private_peer_geo(ip: str) -> dict:
     }
 
 
+def get_fallback_peer_geo(ip: str, hostname: str = '') -> dict:
+    """Place unresolved public peers deterministically so they still appear."""
+    base_lat = my_location.get('lat', 0)
+    base_lon = my_location.get('lon', 0)
+    seed = sum(ord(ch) for ch in f'{ip}|{hostname}')
+    angle = (seed % 360) * (math.pi / 180.0)
+    distance = 5.0 + (seed % 11) * 0.55
+    lat = max(-75.0, min(75.0, base_lat + math.sin(angle) * distance))
+    lon_scale = max(0.3, math.cos(base_lat * math.pi / 180.0))
+    lon = ((base_lon + (math.cos(angle) * distance) / lon_scale + 540) % 360) - 180
+    label = hostname.split('.')[-2:] if hostname and '.' in hostname else []
+    provider = '.'.join(label) if label else 'Unresolved Internet'
+
+    return {
+        'lat': lat,
+        'lon': lon,
+        'city': 'Unknown',
+        'country': 'Internet',
+        'countryCode': '',
+        'isp': provider,
+        'ip': ip,
+        'fallback': True,
+    }
+
+
 def get_geo(ip: str) -> Optional[dict]:
     """Geolocate an IP with caching and rate limiting (45 req/min)."""
     if is_private_ip(ip):
@@ -342,6 +384,11 @@ def rank_dns_name(name: str) -> tuple:
     return (1, len(lowered), lowered)
 
 
+def is_priority_dns_name(name: str) -> bool:
+    lowered = (name or '').lower()
+    return any(token in lowered for token in DNS_NAME_PRIORITY_TOKENS)
+
+
 def resolve_cached_dns_names(ip: str) -> list:
     """Return recent forward-DNS names for an IP from the OS resolver cache."""
     refresh_windows_dns_name_cache()
@@ -374,6 +421,25 @@ def resolve_cached_dns_name(ip: str) -> str:
 def resolve_connection_hostname(ip: str) -> str:
     """Prefer browser-resolved DNS cache names, then fall back to PTR records."""
     return resolve_cached_dns_name(ip) or resolve_reverse_dns(ip)
+
+
+def infer_provider_hostnames(ip: str, process_name: str, remote_port: int) -> list:
+    """Infer searchable provider aliases when browsers hide DNS via DoH/QUIC."""
+    if (process_name or '').lower() not in BROWSER_PROCESS_NAMES:
+        return []
+    if remote_port not in (80, 443, 5228):
+        return []
+
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return []
+
+    aliases = []
+    for alias, network in INFERRED_PROVIDER_NETWORKS:
+        if addr.version == network.version and addr in network:
+            aliases.append(alias)
+    return aliases
 
 
 def parse_traceroute_output(output: str) -> list:
@@ -792,12 +858,20 @@ def monitor_connections():
                     'rx_bytes_per_sec': 0.0,
                     'tx_bytes_per_sec': 0.0,
                 })
+                candidate_hostnames = resolve_cached_dns_names(remote_ip)
+                for inferred_name in infer_provider_hostnames(
+                    remote_ip,
+                    proc_info.get('process_name', ''),
+                    remote_port,
+                ):
+                    if inferred_name not in candidate_hostnames:
+                        candidate_hostnames.append(inferred_name)
+                has_priority_dns = any(is_priority_dns_name(name) for name in candidate_hostnames)
 
                 with active_conn_lock:
                     existing = active_connections.get(key)
                     if existing and not existing.get('_pending'):
-                        cached_hostnames = resolve_cached_dns_names(remote_ip)
-                        cached_hostname = cached_hostnames[0] if cached_hostnames else ''
+                        cached_hostname = candidate_hostnames[0] if candidate_hostnames else ''
                         updated = dict(existing)
                         updated.update({
                             'local_port': primary_local_port,
@@ -805,7 +879,7 @@ def monitor_connections():
                             'local_port_count': len(local_ports),
                             'display_ip': display_ip,
                             'remote_hostname': cached_hostname or existing.get('remote_hostname', ''),
-                            'remote_hostnames': cached_hostnames or existing.get('remote_hostnames', []),
+                            'remote_hostnames': candidate_hostnames or existing.get('remote_hostnames', []),
                             'status': status_str,
                             'pid': proc_info['pid'],
                             'process_name': proc_info['process_name'],
@@ -825,22 +899,27 @@ def monitor_connections():
                     # Mark as pending to avoid duplicate lookups
                     active_connections[key] = {'id': key, '_pending': True}
 
-                def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate):
-                    cached_hostnames = resolve_cached_dns_names(rip)
+                def _process(k, rip, lip, lp, lps, rp, direc, stat, proc, rate, cached_hostnames=None):
+                    cached_hostnames = cached_hostnames if cached_hostnames is not None else resolve_cached_dns_names(rip)
                     dns_future = dns_executor.submit(resolve_reverse_dns, rip)
-                    geo = get_private_peer_geo(rip) if is_private_ip(rip) else get_geo(rip)
+                    hostname_hint = cached_hostnames[0] if cached_hostnames else ''
+                    is_priority = any(is_priority_dns_name(name) for name in cached_hostnames)
+                    if is_private_ip(rip):
+                        geo = get_private_peer_geo(rip)
+                    elif is_priority:
+                        geo = get_fallback_peer_geo(rip, hostname_hint)
+                    else:
+                        geo = get_geo(rip)
                     try:
                         reverse_hostname = dns_future.result(timeout=0.5)
                     except Exception:
                         reverse_hostname = ''
-                    hostname = cached_hostnames[0] if cached_hostnames else reverse_hostname
+                    hostname = hostname_hint or reverse_hostname
                     all_hostnames = list(cached_hostnames)
                     if reverse_hostname and reverse_hostname not in all_hostnames:
                         all_hostnames.append(reverse_hostname)
                     if not geo:
-                        with active_conn_lock:
-                            active_connections.pop(k, None)
-                        return
+                        geo = get_fallback_peer_geo(rip, hostname)
                     destination_key = aggregate_destination_key(geo)
                     with active_conn_lock:
                         destination_seen_counts[destination_key] = destination_seen_counts.get(destination_key, 0) + 1
@@ -881,9 +960,15 @@ def monitor_connections():
                         active_connections[k] = data
                     socketio.emit('new_connection', data)
 
-                executor.submit(_process, key, remote_ip, local_ip,
-                                primary_local_port, local_ports, remote_port,
-                                direction, status_str, proc_info, io_rate)
+                if has_priority_dns:
+                    _process(key, remote_ip, local_ip, primary_local_port, local_ports,
+                             remote_port, direction, status_str, proc_info, io_rate,
+                             candidate_hostnames)
+                else:
+                    executor.submit(_process, key, remote_ip, local_ip,
+                                    primary_local_port, local_ports, remote_port,
+                                    direction, status_str, proc_info, io_rate,
+                                    candidate_hostnames)
 
             # Remove closed connections
             with active_conn_lock:
@@ -896,7 +981,7 @@ def monitor_connections():
         except Exception as e:
             print(f'[MONITOR] Error: {e}')
 
-        time.sleep(2)
+        time.sleep(1)
 
 
 # ── Flask-Routen ────────────────────────────────────────────────
